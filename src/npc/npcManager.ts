@@ -19,6 +19,7 @@ export class NPCManager {
   private scene: THREE.Scene;
   public npcs: NPCInstance[] = [];
   private animTimer = 0;
+  private readonly fleeDirScratch = new THREE.Vector3();
 
   constructor(scene: THREE.Scene) {
     this.scene = scene;
@@ -83,13 +84,19 @@ export class NPCManager {
       // React to gunfire or close danger by fleeing
       if (isGunfireNear && distToPlayer < 40 && npc.state !== 'flee') {
         npc.state = 'flee';
-        eventBus.emit('WITNESS_EVENT', { position: npc.position });
+        eventBus.emit('WITNESS_EVENT', {
+          position: [npc.position.x, npc.position.y, npc.position.z],
+          severity: 2
+        });
       }
 
       if (npc.state === 'flee') {
-        // Run away from player
-        const fleeDir = npc.position.clone().sub(playerPos).setY(0).normalize();
-        npc.velocity.copy(fleeDir).multiplyScalar(5.5);
+        // Run away from player using pooled scratch vector
+        this.fleeDirScratch.subVectors(npc.position, playerPos).setY(0);
+        if (this.fleeDirScratch.lengthSq() > 1e-4) {
+          this.fleeDirScratch.normalize();
+        }
+        npc.velocity.copy(this.fleeDirScratch).multiplyScalar(5.5);
       } else if (npc.state === 'walk') {
         // Ambient wandering along sidewalks
         if (Math.random() < 0.02) {
@@ -109,5 +116,18 @@ export class NPCManager {
       const speed = npc.velocity.length();
       npc.model.animate(speed, this.animTimer, false);
     }
+  }
+
+  public dispose(): void {
+    for (const npc of this.npcs) {
+      this.scene.remove(npc.model.mesh);
+      npc.model.mesh.traverse(obj => {
+        const mesh = obj as THREE.Mesh;
+        if (mesh.isMesh) {
+          mesh.geometry?.dispose();
+        }
+      });
+    }
+    this.npcs.length = 0;
   }
 }
