@@ -144,9 +144,18 @@ export class CharacterModel {
   public updateAnimation(state: PlayerLocomotionState, speed: number, dt: number, isAiming: boolean): void {
     this.animTime += dt * (speed + 0.8) * 4.5;
 
+    // Reset every driven transform before applying the state-specific pose.
+    this.torso.position.y = 1.0;
+    this.torso.rotation.set(0, 0, 0);
+    this.head.rotation.set(0, 0, 0);
+    this.leftArm.rotation.set(0, 0, 0);
+    this.rightArm.rotation.set(0, 0, 0);
+    this.leftLeg.rotation.set(0, 0, 0);
+    this.rightLeg.rotation.set(0, 0, 0);
+    this.mesh.visible = state !== 'in_vehicle';
+
     if (state === 'in_vehicle') {
       // Seated driving posture
-      this.mesh.visible = true;
       this.leftLeg.rotation.x = -Math.PI / 2.2;
       this.rightLeg.rotation.x = -Math.PI / 2.2;
       this.leftArm.rotation.x = -Math.PI / 3;
@@ -197,5 +206,20 @@ export class CharacterModel {
       this.leftArm.rotation.x = -Math.PI / 2.3;
       this.leftArm.rotation.y = 0.35;
     }
+  }
+
+  public dispose(): void {
+    this.mesh.traverse(obj => {
+      const mesh = obj as THREE.Mesh;
+      if (mesh.isMesh) {
+        mesh.geometry?.dispose();
+        if (Array.isArray(mesh.material)) {
+          mesh.material.forEach(m => m.dispose());
+        } else {
+          mesh.material?.dispose();
+        }
+      }
+    });
+    this.mesh.removeFromParent();
   }
 }
