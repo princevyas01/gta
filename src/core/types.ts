@@ -83,6 +83,16 @@ export type VehicleClass =
   | 'tank'
   | 'police';
 
+export interface VehicleInstanceState {
+  id: string;
+  definitionId: string;
+  position: [number, number, number];
+  rotationY: number;
+  speed: number;
+  health: number;
+  isDestroyed: boolean;
+}
+
 export interface VehicleDefinition {
   id: string;
   name: string;
