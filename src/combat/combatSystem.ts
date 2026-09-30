@@ -6,6 +6,8 @@ import { soundEngine } from '../core/audio';
 import { InputState } from '../core/input';
 import { eventBus } from '../core/events';
 import { distance3D } from '../core/math';
+import { WeaponDefinition, InventoryItem } from '../core/types';
+import type { VehicleInstance } from '../vehicles/vehicleController';
 
 interface ActiveRocket {
   position: THREE.Vector3;
@@ -18,7 +20,17 @@ export class CombatSystem {
   private fireTimer = 0;
   private isReloading = false;
   private reloadTimer = 0;
+  private fireLatch = false;
   private activeRockets: ActiveRocket[] = [];
+
+  // Pooled scratch objects
+  private readonly fireRay = new THREE.Ray();
+  private readonly muzzleScratch = new THREE.Vector3();
+  private readonly muzzleOffset = new THREE.Vector3(0, 1.4, 0);
+  private readonly aimScratch = new THREE.Vector3();
+  private readonly targetCenter = new THREE.Vector3();
+  private readonly targetSphere = new THREE.Sphere(new THREE.Vector3(), 0);
+  private readonly hitPoint = new THREE.Vector3();
 
   constructor(scene: THREE.Scene) {
     this.scene = scene;
@@ -30,7 +42,7 @@ export class CombatSystem {
     player: PlayerController,
     vehicleMgr: VehicleManager,
     particles: ParticleSystem,
-    npcTargets: { position: THREE.Vector3; takeDamage: (dmg: number) => void; isDead: boolean }[] = []
+    npcTargets: { id?: string; position: THREE.Vector3; takeDamage: (dmg: number) => void; isDead: boolean }[] = []
   ): void {
     const { def, item } = player.getActiveWeapon();
 
@@ -52,8 +64,13 @@ export class CombatSystem {
     // Firing cooldown
     this.fireTimer -= dt;
 
-    // Trigger firing (Left Click)
-    if (input.fire && this.fireTimer <= 0 && !this.isReloading) {
+    // Semi-auto weapons fire only on the press edge. Automatic weapons may repeat.
+    const shouldFire = def.automatic
+      ? input.fire
+      : input.fire && !this.fireLatch;
+    this.fireLatch = input.fire;
+
+    if (shouldFire && this.fireTimer <= 0 && !this.isReloading) {
       if (item.ammo > 0) {
         this.fireWeapon(def, item, player, vehicleMgr, particles, npcTargets);
         this.fireTimer = 1 / def.fireRate;
@@ -106,22 +123,20 @@ export class CombatSystem {
   }
 
   private fireWeapon(
-    def: any,
-    item: any,
+    def: WeaponDefinition,
+    item: InventoryItem,
     player: PlayerController,
     vehicleMgr: VehicleManager,
     particles: ParticleSystem,
-    npcTargets: { position: THREE.Vector3; takeDamage: (dmg: number) => void; isDead: boolean }[]
+    npcTargets: { id?: string; position: THREE.Vector3; takeDamage: (dmg: number) => void; isDead: boolean }[]
   ): void {
     item.ammo--;
     soundEngine.playGunshot(def.class);
 
-    // Muzzle flash particle
-    const muzzlePos = player.position.clone().add(new THREE.Vector3(0, 1.4, 0));
-    const aimDir = new THREE.Vector3();
+    const muzzlePos = this.muzzleScratch.copy(player.position).add(this.muzzleOffset);
+    const aimDir = this.aimScratch;
     player.camera.camera.getWorldDirection(aimDir);
 
-    // Add spread inaccuracy
     aimDir.x += (Math.random() - 0.5) * def.spread;
     aimDir.y += (Math.random() - 0.5) * def.spread;
     aimDir.z += (Math.random() - 0.5) * def.spread;
@@ -129,45 +144,109 @@ export class CombatSystem {
 
     particles.emitMuzzleFlash(muzzlePos, aimDir);
 
-    // Ramjet Launcher rocket projectile
     if (def.class === 'launcher') {
       this.activeRockets.push({
         position: muzzlePos.clone(),
         velocity: aimDir.clone().multiplyScalar(45),
         life: 3.5
       });
-      eventBus.emit('WEAPON_FIRED', { weapon: def, ammoLeft: item.ammo });
+      eventBus.emit('WEAPON_FIRED', {
+        weaponId: def.id,
+        ammoLeft: item.ammo
+      });
       return;
     }
 
-    // Hitscan Raycast
-    const ray = new THREE.Ray(muzzlePos, aimDir);
+    const ray = this.fireRay;
+    ray.origin.copy(muzzlePos);
+    ray.direction.copy(aimDir);
 
-    // Check hit against Vehicles
-    for (const v of vehicleMgr.vehicles) {
-      if (v.isDestroyed) continue;
-      const sphere = new THREE.Sphere(v.position.clone().add(new THREE.Vector3(0, 1, 0)), v.def.dimensions.width);
-      const hit = ray.intersectSphere(sphere, new THREE.Vector3());
-      if (hit && muzzlePos.distanceTo(hit) <= def.range) {
-        v.takeDamage(def.damage, particles);
-        particles.emitExplosion(hit);
-        eventBus.emit('COMBAT_HIT', { target: 'vehicle', id: v.def.id });
-        break;
+    type HitCandidate = {
+      distance: number;
+      kind: 'vehicle' | 'npc';
+      vehicle?: VehicleInstance;
+      npc?: { id?: string; takeDamage: (dmg: number) => void };
+      point: THREE.Vector3;
+    };
+
+    let nearest: HitCandidate | null = null;
+
+    for (const vehicle of vehicleMgr.vehicles) {
+      if (vehicle.isDestroyed) continue;
+      this.targetCenter.copy(vehicle.position);
+      this.targetCenter.y += 1;
+      this.targetSphere.center.copy(this.targetCenter);
+      this.targetSphere.radius = Math.max(0.6, vehicle.def.dimensions.width * 0.5);
+
+      const hit = ray.intersectSphere(this.targetSphere, this.hitPoint);
+      if (!hit) continue;
+
+      const distance = muzzlePos.distanceTo(hit);
+      if (distance > def.range) continue;
+
+      if (!nearest || distance < nearest.distance) {
+        nearest = {
+          distance,
+          kind: 'vehicle',
+          vehicle,
+          point: this.hitPoint.clone()
+        };
       }
     }
 
-    // Check hit against NPCs
     for (const npc of npcTargets) {
       if (npc.isDead) continue;
-      const sphere = new THREE.Sphere(npc.position.clone().add(new THREE.Vector3(0, 1, 0)), 0.6);
-      const hit = ray.intersectSphere(sphere, new THREE.Vector3());
-      if (hit && muzzlePos.distanceTo(hit) <= def.range) {
-        npc.takeDamage(def.damage);
-        eventBus.emit('COMBAT_HIT', { target: 'npc' });
-        break;
+      this.targetCenter.copy(npc.position);
+      this.targetCenter.y += 1;
+      this.targetSphere.center.copy(this.targetCenter);
+      this.targetSphere.radius = 0.6;
+
+      const hit = ray.intersectSphere(this.targetSphere, this.hitPoint);
+      if (!hit) continue;
+
+      const distance = muzzlePos.distanceTo(hit);
+      if (distance > def.range) continue;
+
+      if (!nearest || distance < nearest.distance) {
+        nearest = {
+          distance,
+          kind: 'npc',
+          npc,
+          point: this.hitPoint.clone()
+        };
       }
     }
 
-    eventBus.emit('WEAPON_FIRED', { weapon: def, ammoLeft: item.ammo });
+    if (nearest) {
+      if (nearest.kind === 'vehicle' && nearest.vehicle) {
+        nearest.vehicle.takeDamage(def.damage, particles);
+        particles.emitExplosion(nearest.point);
+        eventBus.emit('COMBAT_HIT', {
+          target: 'vehicle',
+          id: nearest.vehicle.def.id,
+          damage: def.damage
+        });
+      } else if (nearest.kind === 'npc' && nearest.npc) {
+        nearest.npc.takeDamage(def.damage);
+        eventBus.emit('COMBAT_HIT', {
+          target: 'npc',
+          id: nearest.npc.id,
+          damage: def.damage
+        });
+      }
+    }
+
+    eventBus.emit('WEAPON_FIRED', {
+      weaponId: def.id,
+      ammoLeft: item.ammo
+    });
+  }
+
+  public dispose(): void {
+    this.activeRockets.length = 0;
+    this.fireTimer = 0;
+    this.isReloading = false;
+    this.reloadTimer = 0;
+    this.fireLatch = false;
   }
 }
