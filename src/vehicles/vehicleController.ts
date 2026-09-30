@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { VehicleDefinition } from '../core/types';
 import { InputState } from '../core/input';
-import { clamp, lerp } from '../core/math';
+import { clamp, lerp, WORLD_EXTENTS } from '../core/math';
 import { soundEngine } from '../core/audio';
 import { ParticleSystem } from '../rendering/particles';
 import { StaticCollider } from '../world/sectorBuilder';
@@ -36,6 +36,13 @@ export class VehicleInstance {
   private smokeTimer: number = 0;
   private sirenTimer: number = 0;
 
+  // Scratch objects for zero-allocation simulation
+  private readonly nextPosScratch = new THREE.Vector3();
+  private readonly testSphere = new THREE.Sphere(new THREE.Vector3(), 0);
+  private readonly exitScratch = new THREE.Vector3();
+  private readonly smokeScratch = new THREE.Vector3();
+  private readonly groundSmokeScratch = new THREE.Vector3();
+
   constructor(
     def: VehicleDefinition,
     modelData: {
@@ -61,6 +68,43 @@ export class VehicleInstance {
     this.mesh.rotation.y = this.rotationY;
   }
 
+  public getSafeExitPosition(colliders: StaticCollider[]): THREE.Vector3 {
+    const side = new THREE.Vector3(
+      Math.cos(this.rotationY),
+      0,
+      -Math.sin(this.rotationY)
+    );
+    const offsets = [1.8, -1.8, 2.8, -2.8];
+    for (const distance of offsets) {
+      this.exitScratch.copy(this.position).addScaledVector(side, distance);
+      this.exitScratch.y = this.position.y + 0.1;
+      let blocked = false;
+      for (const collider of colliders) {
+        if (collider.box.containsPoint(this.exitScratch)) {
+          blocked = true;
+          break;
+        }
+      }
+      if (!blocked) return this.exitScratch.clone();
+    }
+    return this.position.clone().addScaledVector(side, 1.8);
+  }
+
+  public dispose(): void {
+    this.mesh.traverse(object => {
+      const mesh = object as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      mesh.geometry?.dispose();
+      const material = mesh.material;
+      if (Array.isArray(material)) {
+        for (const entry of material) entry.dispose();
+      } else {
+        material?.dispose();
+      }
+    });
+    this.mesh.removeFromParent();
+  }
+
   public update(
     input: InputState | null,
     dt: number,
@@ -74,6 +118,10 @@ export class VehicleInstance {
       this.updateHelicopter(input, dt, particles);
     } else if (this.def.hasTurret) {
       this.updateTank(input, dt, particles, colliders, targetAimAngle);
+    } else if (this.def.isBoat) {
+      this.updateBoat(input, dt, particles);
+    } else if (this.def.class === 'motorbike') {
+      this.updateMotorbike(input, dt, particles, colliders);
     } else {
       this.updateCar(input, dt, particles, colliders);
     }
@@ -83,12 +131,12 @@ export class VehicleInstance {
       this.smokeTimer += dt;
       if (this.smokeTimer > 0.08) {
         this.smokeTimer = 0;
-        const hoodPos = this.position.clone().add(
-          new THREE.Vector3(0, 1.2, 0).add(
-            new THREE.Vector3(0, 0, this.def.dimensions.length * 0.4).applyAxisAngle(new THREE.Vector3(0, 1, 0), this.rotationY)
-          )
-        );
-        particles.emitTireSmoke(hoodPos);
+        this.smokeScratch.set(
+          Math.sin(this.rotationY) * this.def.dimensions.length * 0.4,
+          1.2,
+          Math.cos(this.rotationY) * this.def.dimensions.length * 0.4
+        ).add(this.position);
+        particles.emitTireSmoke(this.smokeScratch);
       }
     }
 
@@ -106,7 +154,7 @@ export class VehicleInstance {
   }
 
   /**
-   * 4-Wheeled Ground Vehicle Physics (Cars, Pickups, Vans, Bikes, Police)
+   * 4-Wheeled Ground Vehicle Physics (Cars, Pickups, Vans, Police)
    */
   private updateCar(
     input: InputState | null,
@@ -167,22 +215,35 @@ export class VehicleInstance {
     const forwardZ = Math.cos(this.rotationY);
     this.velocity.set(forwardX * this.speed, 0, forwardZ * this.speed);
 
-    // Position integration
-    const nextPos = this.position.clone().addScaledVector(this.velocity, dt);
+    // Position integration with pooled collision
+    this.nextPosScratch.copy(this.position).addScaledVector(this.velocity, dt);
 
-    // Swept Box/Sphere obstacle collision
     const carRadius = this.def.dimensions.width * 0.6;
+    this.testSphere.center.copy(this.nextPosScratch);
+    this.testSphere.radius = carRadius;
+
     for (const col of colliders) {
-      if (col.box.intersectsSphere(new THREE.Sphere(nextPos, carRadius))) {
+      if (col.box.intersectsSphere(this.testSphere)) {
         // Crash reaction
         this.speed *= -0.3; // Bounce back
         this.health -= Math.abs(this.speed) * 8;
-        particles.emitExplosion(nextPos);
+        particles.emitExplosion(this.nextPosScratch);
         return;
       }
     }
 
-    this.position.copy(nextPos);
+    // Clamp or reject positions outside the playable envelope
+    if (
+      this.nextPosScratch.x < WORLD_EXTENTS.minX ||
+      this.nextPosScratch.x > WORLD_EXTENTS.maxX ||
+      this.nextPosScratch.z < WORLD_EXTENTS.minZ ||
+      this.nextPosScratch.z > WORLD_EXTENTS.maxZ
+    ) {
+      this.speed *= -0.5;
+      return;
+    }
+
+    this.position.copy(this.nextPosScratch);
 
     // Wheel rotation animation
     const wheelRotDelta = (this.speed / (this.def.dimensions.height * 0.26)) * dt;
@@ -196,6 +257,95 @@ export class VehicleInstance {
 
     if (this.isPlayerControlled) {
       soundEngine.updateVehicleEngine(speedRatio);
+    }
+  }
+
+  /**
+   * Boat Physics
+   */
+  private updateBoat(
+    input: InputState | null,
+    dt: number,
+    particles: ParticleSystem
+  ): void {
+    let throttle = 0;
+    let steer = 0;
+    if (input && this.isPlayerControlled) {
+      if (input.forward) throttle += 1;
+      if (input.backward) throttle -= 0.5;
+      if (input.left) steer += 1;
+      if (input.right) steer -= 1;
+    }
+
+    this.speed += throttle * this.def.acceleration * dt;
+    this.speed -= Math.sign(this.speed) * Math.min(Math.abs(this.speed), 2.5 * dt);
+    this.speed = clamp(this.speed, -this.def.topSpeed * 0.25, this.def.topSpeed);
+
+    const steeringAuthority = clamp(Math.abs(this.speed) / 10, 0, 1);
+    this.rotationY += steer * 0.45 * steeringAuthority * dt;
+
+    const forwardX = Math.sin(this.rotationY);
+    const forwardZ = Math.cos(this.rotationY);
+    this.velocity.set(forwardX * this.speed, 0, forwardZ * this.speed);
+    this.position.addScaledVector(this.velocity, dt);
+
+    if (Math.abs(this.speed) > 8 && this.isPlayerControlled) {
+      particles.emitTireSmoke(this.position);
+    }
+  }
+
+  /**
+   * Motorbike Physics
+   */
+  private updateMotorbike(
+    input: InputState | null,
+    dt: number,
+    particles: ParticleSystem,
+    colliders: StaticCollider[]
+  ): void {
+    let throttle = 0;
+    let steer = 0;
+    if (input && this.isPlayerControlled) {
+      if (input.forward) throttle += 1;
+      if (input.backward) throttle -= 0.7;
+      if (input.left) steer += 1;
+      if (input.right) steer -= 1;
+    }
+
+    this.speed += throttle * this.def.acceleration * dt;
+    this.speed -= Math.sign(this.speed) * Math.min(Math.abs(this.speed), 7 * dt);
+    this.speed = clamp(this.speed, -this.def.topSpeed * 0.35, this.def.topSpeed);
+
+    const lean = -steer * clamp(Math.abs(this.speed) / this.def.topSpeed, 0, 1) * 0.35;
+    this.mesh.rotation.z = lean;
+
+    const turnRate = steer * clamp(Math.abs(this.speed) / 6, 0, 1.4);
+    this.rotationY += turnRate * dt;
+
+    const forwardX = Math.sin(this.rotationY);
+    const forwardZ = Math.cos(this.rotationY);
+    this.velocity.set(forwardX * this.speed, 0, forwardZ * this.speed);
+
+    this.nextPosScratch.copy(this.position).addScaledVector(this.velocity, dt);
+    this.testSphere.center.copy(this.nextPosScratch);
+    this.testSphere.radius = 0.55;
+
+    for (const collider of colliders) {
+      if (collider.box.intersectsSphere(this.testSphere)) {
+        this.speed *= -0.2;
+        this.health -= 15;
+        return;
+      }
+    }
+
+    this.position.copy(this.nextPosScratch);
+
+    for (const wheel of this.wheels) {
+      wheel.rotation.x += (this.speed / 0.35) * dt;
+    }
+
+    if (this.isPlayerControlled) {
+      soundEngine.updateVehicleEngine(Math.abs(this.speed) / this.def.topSpeed);
     }
   }
 
@@ -244,7 +394,8 @@ export class VehicleInstance {
 
     // Rotor wash on ground
     if (this.position.y < 12) {
-      particles.emitTireSmoke(new THREE.Vector3(this.position.x, 0.1, this.position.z));
+      this.groundSmokeScratch.set(this.position.x, 0.1, this.position.z);
+      particles.emitTireSmoke(this.groundSmokeScratch);
     }
   }
 
