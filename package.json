@@ -1,7 +1,7 @@
 {
   "name": "san-aurelio-web3d",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -13,9 +13,13 @@
     "perf": "vitest run test/perf.test.ts"
   },
   "dependencies": {
+    "@dimforge/rapier3d-compat": "^0.21.0",
+    "@recast-navigation/generators": "^0.43.1",
+    "@recast-navigation/three": "^0.43.1",
     "lucide-react": "^1.16.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "recast-navigation": "^0.43.1",
     "three": "^0.174.0",
     "zustand": "^5.0.3"
   },
