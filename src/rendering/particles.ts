@@ -11,12 +11,20 @@ interface Particle {
 
 export class ParticleSystem {
   private particles: Particle[] = [];
+  private pool: Particle[] = [];
   private geometry: THREE.BufferGeometry;
   private material: THREE.PointsMaterial;
   private points: THREE.Points;
   private maxParticles = 1200;
   private positions: Float32Array;
   private colors: Float32Array;
+
+  // Pooled scratch objects to eliminate per-emission allocations
+  private readonly scratchVel = new THREE.Vector3();
+  private readonly fireColor = new THREE.Color(0xff5500);
+  private readonly smokeColor = new THREE.Color(0x888888);
+  private readonly flashColor = new THREE.Color(0xffea00);
+  private readonly tireSmokeColor = new THREE.Color(0xcccccc);
 
   constructor(scene: THREE.Scene) {
     this.positions = new Float32Array(this.maxParticles * 3);
@@ -38,58 +46,80 @@ export class ParticleSystem {
     this.points = new THREE.Points(this.geometry, this.material);
     this.points.frustumCulled = false;
     scene.add(this.points);
+
+    // Pre-populate pool
+    for (let i = 0; i < this.maxParticles; i++) {
+      this.pool.push({
+        position: new THREE.Vector3(),
+        velocity: new THREE.Vector3(),
+        life: 0,
+        maxLife: 0,
+        size: 0,
+        color: new THREE.Color()
+      });
+    }
   }
 
   public emit(
     pos: THREE.Vector3,
     velocity: THREE.Vector3,
     color: THREE.Color,
-    maxLife: number = 0.5,
-    size: number = 0.35
+    maxLife = 0.5,
+    size = 0.35
   ): void {
     if (this.particles.length >= this.maxParticles) return;
-    this.particles.push({
-      position: pos.clone(),
-      velocity: velocity.clone(),
-      life: maxLife,
-      maxLife,
-      size,
-      color: color.clone()
-    });
+    const particle = this.pool.pop() ?? {
+      position: new THREE.Vector3(),
+      velocity: new THREE.Vector3(),
+      life: 0,
+      maxLife: 0,
+      size: 0,
+      color: new THREE.Color()
+    };
+    particle.position.copy(pos);
+    particle.velocity.copy(velocity);
+    particle.life = maxLife;
+    particle.maxLife = maxLife;
+    particle.size = size;
+    particle.color.copy(color);
+    this.particles.push(particle);
   }
 
   public emitExplosion(pos: THREE.Vector3): void {
-    const fireColor = new THREE.Color(0xff5500);
-    const smokeColor = new THREE.Color(0x888888);
     for (let i = 0; i < 45; i++) {
-      const vel = new THREE.Vector3(
+      this.scratchVel.set(
         (Math.random() - 0.5) * 16,
         Math.random() * 12 + 2,
         (Math.random() - 0.5) * 16
       );
-      this.emit(pos, vel, Math.random() > 0.4 ? fireColor : smokeColor, 0.8 + Math.random() * 0.5, 0.6);
+      this.emit(
+        pos,
+        this.scratchVel,
+        Math.random() > 0.4 ? this.fireColor : this.smokeColor,
+        0.8 + Math.random() * 0.5,
+        0.6
+      );
     }
   }
 
   public emitMuzzleFlash(pos: THREE.Vector3, dir: THREE.Vector3): void {
-    const flashColor = new THREE.Color(0xffea00);
     for (let i = 0; i < 8; i++) {
-      const vel = dir.clone().multiplyScalar(15).add(
-        new THREE.Vector3((Math.random() - 0.5) * 3, (Math.random() - 0.5) * 3, (Math.random() - 0.5) * 3)
-      );
-      this.emit(pos, vel, flashColor, 0.08, 0.4);
+      this.scratchVel.copy(dir).multiplyScalar(15);
+      this.scratchVel.x += (Math.random() - 0.5) * 3;
+      this.scratchVel.y += (Math.random() - 0.5) * 3;
+      this.scratchVel.z += (Math.random() - 0.5) * 3;
+      this.emit(pos, this.scratchVel, this.flashColor, 0.08, 0.4);
     }
   }
 
   public emitTireSmoke(pos: THREE.Vector3): void {
-    const smokeColor = new THREE.Color(0xcccccc);
     for (let i = 0; i < 3; i++) {
-      const vel = new THREE.Vector3(
+      this.scratchVel.set(
         (Math.random() - 0.5) * 1.5,
         Math.random() * 2 + 0.5,
         (Math.random() - 0.5) * 1.5
       );
-      this.emit(pos, vel, smokeColor, 0.6, 0.45);
+      this.emit(pos, this.scratchVel, this.tireSmokeColor, 0.6, 0.45);
     }
   }
 
@@ -102,7 +132,12 @@ export class ParticleSystem {
       const p = this.particles[i];
       p.life -= dt;
       if (p.life <= 0) {
-        this.particles.splice(i, 1);
+        // Swap-delete compaction without splice
+        this.pool.push(p);
+        const last = this.particles.pop()!;
+        if (i < this.particles.length) {
+          this.particles[i] = last;
+        }
         continue;
       }
 
@@ -131,5 +166,19 @@ export class ParticleSystem {
     posAttr.needsUpdate = true;
     colAttr.needsUpdate = true;
     this.geometry.setDrawRange(0, aliveCount);
+  }
+
+  public dispose(): void {
+    for (const p of this.particles) {
+      this.pool.push(p);
+    }
+    this.particles.length = 0;
+    this.geometry.dispose();
+    this.material.dispose();
+    this.sceneRemove();
+  }
+
+  private sceneRemove(): void {
+    this.points.removeFromParent();
   }
 }
