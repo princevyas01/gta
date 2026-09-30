@@ -6,6 +6,7 @@ export class AtmosphereSystem {
   private scene: THREE.Scene;
   private rainPoints: THREE.Points | null = null;
   private rainGeometry: THREE.BufferGeometry | null = null;
+  private rainMaterial: THREE.PointsMaterial | null = null;
   private isRaining: boolean = false;
 
   constructor(scene: THREE.Scene) {
@@ -122,13 +123,13 @@ export class AtmosphereSystem {
     }
     this.rainGeometry = new THREE.BufferGeometry();
     this.rainGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    const mat = new THREE.PointsMaterial({
+    this.rainMaterial = new THREE.PointsMaterial({
       color: 0x93c5fd,
       size: 0.15,
       transparent: true,
       opacity: 0.6
     });
-    this.rainPoints = new THREE.Points(this.rainGeometry, mat);
+    this.rainPoints = new THREE.Points(this.rainGeometry, this.rainMaterial);
     this.scene.add(this.rainPoints);
     this.isRaining = true;
   }
@@ -137,9 +138,22 @@ export class AtmosphereSystem {
     if (this.rainPoints) {
       this.scene.remove(this.rainPoints);
       this.rainGeometry?.dispose();
+      this.rainMaterial?.dispose();
       this.rainPoints = null;
       this.rainGeometry = null;
+      this.rainMaterial = null;
     }
     this.isRaining = false;
+  }
+
+  public dispose(): void {
+    this.removeRain();
+    this.scene.remove(this.dirLight);
+    this.dirLight.dispose?.();
+    this.scene.remove(this.hemiLight);
+    this.hemiLight.dispose?.();
+    if (this.scene.fog) {
+      this.scene.fog = null;
+    }
   }
 }
