@@ -2,12 +2,13 @@ import * as THREE from 'three';
 import { CharacterModel } from './characterModel';
 import { ThirdPersonCamera } from './thirdPersonCamera';
 import { InputState } from '../core/input';
-import { PlayerLocomotionState, PlayerStats, InventoryItem } from '../core/types';
+import { PlayerLocomotionState, PlayerStats, InventoryItem, WeaponDefinition } from '../core/types';
 import { clamp, lerpAngle } from '../core/math';
 import { WorldStreamer } from '../world/worldStreamer';
 import { CANONICAL_WEAPONS } from '../data/weapons';
 import { soundEngine } from '../core/audio';
 import { eventBus } from '../core/events';
+import type { VehicleInstance } from '../vehicles/vehicleController';
 
 export class PlayerController {
   public model: CharacterModel;
@@ -33,7 +34,7 @@ export class PlayerController {
   ];
   public activeWeaponIndex: number = 0;
   public isAiming: boolean = false;
-  public currentVehicle: any = null; // Reference to active VehicleInstance when mounted
+  public currentVehicle: VehicleInstance | null = null;
 
   private isGrounded: boolean = true;
   private readonly gravity: number = 24.0;
@@ -41,10 +42,22 @@ export class PlayerController {
   private readonly jogSpeed: number = 7.5;
   private readonly sprintSpeed: number = 12.0;
 
+  private readonly unsubscribeVehicleExit: () => void;
+  private readonly moveDir = new THREE.Vector3();
+  private readonly nextPos = new THREE.Vector3();
+
   constructor(scene: THREE.Scene, camera: THREE.PerspectiveCamera) {
     this.model = new CharacterModel();
     scene.add(this.model.mesh);
     this.camera = new ThirdPersonCamera(camera);
+
+    this.unsubscribeVehicleExit = eventBus.on('VEHICLE_EXIT', data => {
+      this.currentVehicle = null;
+      this.position.set(data.position[0], data.position[1], data.position[2]);
+      this.velocity.set(0, 0, 0);
+      this.state = 'idle';
+      this.model.mesh.visible = true;
+    });
   }
 
   public update(input: InputState, dt: number, streamer: WorldStreamer): void {
@@ -67,7 +80,7 @@ export class PlayerController {
     if (input.weaponSlot !== null && input.weaponSlot < this.inventory.length) {
       this.activeWeaponIndex = input.weaponSlot;
       soundEngine.playUIClick();
-      eventBus.emit('WEAPON_CHANGED', this.getActiveWeapon());
+      eventBus.emit('WEAPON_CHANGED', { weaponId: this.getActiveWeapon().def.id });
     }
 
     this.isAiming = input.aim;
@@ -77,15 +90,15 @@ export class PlayerController {
     const camFwd = this.camera.getForwardVector();
     const camRight = this.camera.getRightVector();
 
-    const moveDir = new THREE.Vector3();
-    if (input.forward) moveDir.add(camFwd);
-    if (input.backward) moveDir.sub(camFwd);
-    if (input.right) moveDir.add(camRight);
-    if (input.left) moveDir.sub(camRight);
+    this.moveDir.set(0, 0, 0);
+    if (input.forward) this.moveDir.add(camFwd);
+    if (input.backward) this.moveDir.sub(camFwd);
+    if (input.right) this.moveDir.add(camRight);
+    if (input.left) this.moveDir.sub(camRight);
 
-    const isMoving = moveDir.lengthSq() > 0.001;
+    const isMoving = this.moveDir.lengthSq() > 0.001;
     if (isMoving) {
-      moveDir.normalize();
+      this.moveDir.normalize();
     }
 
     // 3. Movement Speed & Stamina
@@ -107,14 +120,14 @@ export class PlayerController {
 
     // 4. Horizontal Acceleration & Deceleration
     const accelRate = 22.0;
-    const targetVelX = moveDir.x * targetSpeed;
-    const targetVelZ = moveDir.z * targetSpeed;
+    const targetVelX = this.moveDir.x * targetSpeed;
+    const targetVelZ = this.moveDir.z * targetSpeed;
     this.velocity.x += (targetVelX - this.velocity.x) * clamp(dt * accelRate, 0, 1);
     this.velocity.z += (targetVelZ - this.velocity.z) * clamp(dt * accelRate, 0, 1);
 
     // 5. Jump & Vertical Gravity
     if (this.isGrounded) {
-      if (input.jump) {
+      if (input.jumpPressed) {
         this.velocity.y = 8.5; // Jump impulse
         this.isGrounded = false;
         this.state = 'jump';
@@ -129,31 +142,32 @@ export class PlayerController {
     }
 
     // 6. Swept Collision & Position Update
-    const nextPos = this.position.clone();
-    nextPos.x += this.velocity.x * dt;
-    nextPos.z += this.velocity.z * dt;
-    nextPos.y += this.velocity.y * dt;
+    this.nextPos.copy(this.position);
+    this.nextPos.x += this.velocity.x * dt;
+    this.nextPos.z += this.velocity.z * dt;
+    this.nextPos.y += this.velocity.y * dt;
 
     // Ground check (road / sidewalk / terrain)
-    if (nextPos.y <= 0) {
-      nextPos.y = 0;
+    const groundY = streamer.getGroundHeight(this.nextPos.x, this.nextPos.z, this.nextPos.y);
+    if (this.nextPos.y <= groundY) {
+      this.nextPos.y = groundY;
       this.velocity.y = 0;
       this.isGrounded = true;
     }
 
     // World obstacle collision response
-    const colTest = streamer.testCollision(nextPos, 0.45);
+    const colTest = streamer.testCollision(this.nextPos, 0.45);
     if (colTest.hit) {
       // Slide along wall normal
       const dot = this.velocity.dot(colTest.normal);
       if (dot < 0) {
-        this.velocity.sub(colTest.normal.clone().multiplyScalar(dot));
+        this.velocity.addScaledVector(colTest.normal, -dot);
       }
-      nextPos.x = this.position.x + this.velocity.x * dt;
-      nextPos.z = this.position.z + this.velocity.z * dt;
+      this.nextPos.x = this.position.x + this.velocity.x * dt;
+      this.nextPos.z = this.position.z + this.velocity.z * dt;
     }
 
-    this.position.copy(nextPos);
+    this.position.copy(this.nextPos);
     this.model.mesh.position.copy(this.position);
 
     // 7. Rotation Orientation
@@ -175,7 +189,7 @@ export class PlayerController {
     this.camera.update(this.position, dt, input.sprint, streamer.allColliders);
   }
 
-  public getActiveWeapon(): { def: any; item: InventoryItem } {
+  public getActiveWeapon(): { def: WeaponDefinition; item: InventoryItem } {
     const item = this.inventory[this.activeWeaponIndex] || this.inventory[0];
     const def = CANONICAL_WEAPONS.find(w => w.id === item.weaponId) || CANONICAL_WEAPONS[0];
     return { def, item };
@@ -194,5 +208,10 @@ export class PlayerController {
   public addCash(amount: number): void {
     this.stats.cash += amount;
     eventBus.emit('CASH_CHANGED', this.stats.cash);
+  }
+
+  public dispose(): void {
+    this.unsubscribeVehicleExit();
+    this.model.dispose();
   }
 }
