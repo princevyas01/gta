@@ -14,7 +14,7 @@ class SoundEngine {
     if (this.ctx) return;
     try {
       if (typeof window === 'undefined') return;
-      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
       if (!AudioCtx) return;
       this.ctx = new AudioCtx();
       this.masterGain = this.ctx.createGain();
@@ -33,6 +33,15 @@ class SoundEngine {
       this.ctx.resume().catch(() => {});
     }
     return !!this.ctx;
+  }
+
+  public unlock(): void {
+    if (!this.ctx) {
+      this.init();
+    }
+    if (this.ctx && this.ctx.state === 'suspended') {
+      this.ctx.resume().catch(() => {});
+    }
   }
 
   public setMuted(muted: boolean): void {
@@ -259,3 +268,8 @@ class SoundEngine {
 }
 
 export const soundEngine = new SoundEngine();
+
+// Call exactly once from a trusted pointer/keyboard gesture.
+export function unlockGameAudio(): void {
+  soundEngine.unlock();
+}
