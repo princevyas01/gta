@@ -3,26 +3,28 @@ import { useGameStore } from './store';
 import { Smartphone, Car, Shield, MessageSquare, PhoneCall, Save, RotateCcw, X } from 'lucide-react';
 import { soundEngine } from '../core/audio';
 import { CANONICAL_VEHICLES } from '../data/vehicles';
-import { SaveManager } from '../save/saveManager';
 
 export const PhoneMenu: React.FC<{
   onSpawnVehicle: (defId: string) => void;
   onRestartCheckpoint: () => void;
-}> = ({ onSpawnVehicle, onRestartCheckpoint }) => {
+  onSaveGame: () => Promise<boolean>;
+}> = ({ onSpawnVehicle, onRestartCheckpoint, onSaveGame }) => {
   const { isPhoneOpen, setPhoneOpen, timeFormatted, cash } = useGameStore();
   const [activeTab, setActiveTab] = useState<'home' | 'garage' | 'messages' | 'contacts'>('home');
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
 
   if (!isPhoneOpen) return null;
 
-  const handleSave = () => {
-    // Collect and persist current game state
+  const handleSave = async () => {
     setSaveStatus('Saving game state...');
     soundEngine.playUIClick();
-    setTimeout(() => {
+    const ok = await onSaveGame();
+    if (ok) {
       setSaveStatus('Game successfully saved!');
-      setTimeout(() => setSaveStatus(null), 2500);
-    }, 400);
+    } else {
+      setSaveStatus('Save operation failed!');
+    }
+    setTimeout(() => setSaveStatus(null), 2500);
   };
 
   return (
