@@ -11,10 +11,17 @@ export class ThirdPersonCamera {
   public azimuth = 0; // Horizontal orbit angle (radians)
   public elevation = 0.25; // Vertical orbit angle (radians)
 
-  private targetDistance = 4.2;
   private currentDistance = 4.2;
   private currentTarget = new THREE.Vector3();
-  private raycaster = new THREE.Raycaster();
+
+  // Pooled scratch objects to eliminate per-frame allocations
+  private readonly cameraRay = new THREE.Ray();
+  private readonly cameraHit = new THREE.Vector3();
+  private readonly focalPoint = new THREE.Vector3();
+  private readonly idealCamPos = new THREE.Vector3();
+  private readonly camRayDirScratch = new THREE.Vector3();
+  private readonly forwardScratch = new THREE.Vector3();
+  private readonly rightScratch = new THREE.Vector3();
 
   constructor(camera: THREE.PerspectiveCamera) {
     this.camera = camera;
@@ -24,7 +31,7 @@ export class ThirdPersonCamera {
     const sensitivity = 0.0028;
     this.azimuth -= deltaX * sensitivity;
     this.elevation -= deltaY * sensitivity;
-    // Clamp pitch between -1.1 and 1.2 radians
+    // Clamp pitch between -0.6 and 1.2 radians
     this.elevation = clamp(this.elevation, -0.6, 1.2);
   }
 
@@ -62,8 +69,9 @@ export class ThirdPersonCamera {
     this.camera.updateProjectionMatrix();
 
     // Smooth target tracking
-    const focalPoint = targetPos.clone().add(new THREE.Vector3(0, heightOffset, 0));
-    this.currentTarget.lerp(focalPoint, dt * 14);
+    this.focalPoint.copy(targetPos);
+    this.focalPoint.y += heightOffset;
+    this.currentTarget.lerp(this.focalPoint, dt * 14);
 
     // Compute ideal spherical camera position
     const cosElev = Math.cos(this.elevation);
@@ -79,7 +87,7 @@ export class ThirdPersonCamera {
     const rightX = Math.cos(this.azimuth);
     const rightZ = -Math.sin(this.azimuth);
 
-    const idealCamPos = new THREE.Vector3(
+    this.idealCamPos.set(
       this.currentTarget.x + dirX * desiredDist + rightX * shoulderOffset,
       this.currentTarget.y + dirY * desiredDist,
       this.currentTarget.z + dirZ * desiredDist + rightZ * shoulderOffset
@@ -88,12 +96,14 @@ export class ThirdPersonCamera {
     // Camera Collision Obstruction Prevention
     // Raycast from focal point toward camera position
     let actualDist = desiredDist;
-    const camRayDir = idealCamPos.clone().sub(this.currentTarget).normalize();
-    const rayDist = this.currentTarget.distanceTo(idealCamPos);
+    this.camRayDirScratch.subVectors(this.idealCamPos, this.currentTarget).normalize();
+    const rayDist = this.currentTarget.distanceTo(this.idealCamPos);
+
+    this.cameraRay.origin.copy(this.currentTarget);
+    this.cameraRay.direction.copy(this.camRayDirScratch);
 
     for (const col of colliders) {
-      const ray = new THREE.Ray(this.currentTarget, camRayDir);
-      const hit = ray.intersectBox(col.box, new THREE.Vector3());
+      const hit = this.cameraRay.intersectBox(col.box, this.cameraHit);
       if (hit) {
         const d = this.currentTarget.distanceTo(hit);
         if (d < rayDist && d < actualDist) {
@@ -105,23 +115,23 @@ export class ThirdPersonCamera {
     this.currentDistance = lerp(this.currentDistance, actualDist, dt * 15);
 
     this.camera.position.set(
-      this.currentTarget.x + camRayDir.x * this.currentDistance,
-      this.currentTarget.y + camRayDir.y * this.currentDistance,
-      this.currentTarget.z + camRayDir.z * this.currentDistance
+      this.currentTarget.x + this.camRayDirScratch.x * this.currentDistance,
+      this.currentTarget.y + this.camRayDirScratch.y * this.currentDistance,
+      this.currentTarget.z + this.camRayDirScratch.z * this.currentDistance
     );
 
     this.camera.lookAt(this.currentTarget);
   }
 
   public getForwardVector(): THREE.Vector3 {
-    const v = new THREE.Vector3();
-    this.camera.getWorldDirection(v);
-    v.y = 0;
-    return v.normalize();
+    this.camera.getWorldDirection(this.forwardScratch);
+    this.forwardScratch.y = 0;
+    return this.forwardScratch.normalize();
   }
 
   public getRightVector(): THREE.Vector3 {
     const fwd = this.getForwardVector();
-    return new THREE.Vector3(-fwd.z, 0, fwd.x);
+    this.rightScratch.set(-fwd.z, 0, fwd.x);
+    return this.rightScratch;
   }
 }
