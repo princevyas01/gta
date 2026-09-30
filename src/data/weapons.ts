@@ -93,6 +93,6 @@ export const CANONICAL_WEAPONS: WeaponDefinition[] = [
   }
 ];
 
-export function getWeaponDef(id: string): WeaponDefinition {
-  return CANONICAL_WEAPONS.find(w => w.id === id) || CANONICAL_WEAPONS[0];
+export function getWeaponDef(id: string): WeaponDefinition | undefined {
+  return CANONICAL_WEAPONS.find(w => w.id === id);
 }
