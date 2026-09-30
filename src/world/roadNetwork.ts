@@ -12,6 +12,12 @@ export interface RoadNode {
 export class RoadNetwork {
   public nodes: Map<string, RoadNode> = new Map();
   private ribbonMesh: THREE.Mesh | null = null;
+  private ribbonKey = '';
+  private readonly ribbonMaterial = new THREE.MeshBasicMaterial({
+    color: 0x06b6d4,
+    transparent: true,
+    opacity: 0.75
+  });
   private scene: THREE.Scene;
 
   constructor(scene: THREE.Scene) {
@@ -115,65 +121,88 @@ export class RoadNetwork {
 
     if (startNode.id === endNode.id) {
       return [
-        [startX, 0.1, startZ],
-        [endX, 0.1, endZ]
+        [startX, 0.15, startZ],
+        [endX, 0.15, endZ]
       ];
     }
 
-    const dists = new Map<string, number>();
-    const prev = new Map<string, string | null>();
-    const unvisited = new Set<string>();
+    const gScore = new Map<string, number>();
+    const fScore = new Map<string, number>();
+    const previous = new Map<string, string | null>();
+    const open = new Set<string>();
+
+    const heuristic = (node: RoadNode): number =>
+      distance2D(node.x, node.z, endNode.x, endNode.z);
 
     for (const id of this.nodes.keys()) {
-      dists.set(id, Infinity);
-      prev.set(id, null);
-      unvisited.add(id);
+      gScore.set(id, Infinity);
+      fScore.set(id, Infinity);
+      previous.set(id, null);
     }
-    dists.set(startNode.id, 0);
 
-    while (unvisited.size > 0) {
+    gScore.set(startNode.id, 0);
+    fScore.set(startNode.id, heuristic(startNode));
+    open.add(startNode.id);
+
+    while (open.size > 0) {
       let currentId: string | null = null;
-      let minVal = Infinity;
-      for (const id of unvisited) {
-        const d = dists.get(id)!;
-        if (d < minVal) {
-          minVal = d;
+      let bestF = Infinity;
+      for (const id of open) {
+        const score = fScore.get(id) ?? Infinity;
+        if (score < bestF) {
+          bestF = score;
           currentId = id;
         }
       }
 
-      if (!currentId || currentId === endNode.id || minVal === Infinity) {
-        break;
-      }
+      if (!currentId) break;
+      if (currentId === endNode.id) break;
 
-      unvisited.delete(currentId);
-      const currNode = this.nodes.get(currentId)!;
+      open.delete(currentId);
+      const current = this.nodes.get(currentId);
+      if (!current) continue;
 
-      for (const neighborId of currNode.neighbors) {
-        if (!unvisited.has(neighborId)) continue;
-        const neighbor = this.nodes.get(neighborId)!;
-        const edgeWeight = distance2D(currNode.x, currNode.z, neighbor.x, neighbor.z);
-        const alt = dists.get(currentId)! + edgeWeight;
-        if (alt < dists.get(neighborId)!) {
-          dists.set(neighborId, alt);
-          prev.set(neighborId, currentId);
+      for (const neighborId of current.neighbors) {
+        const neighbor = this.nodes.get(neighborId);
+        if (!neighbor) continue;
+
+        const tentative = (gScore.get(currentId) ?? Infinity) +
+          distance2D(current.x, current.z, neighbor.x, neighbor.z);
+
+        if (tentative < (gScore.get(neighborId) ?? Infinity)) {
+          previous.set(neighborId, currentId);
+          gScore.set(neighborId, tentative);
+          fScore.set(neighborId, tentative + heuristic(neighbor));
+          open.add(neighborId);
         }
       }
     }
 
-    // Reconstruct path
-    const path: [number, number, number][] = [];
-    let curr: string | null = endNode.id;
-    while (curr) {
-      const n = this.nodes.get(curr)!;
-      path.unshift([n.x, 0.15, n.z]);
-      curr = prev.get(curr) || null;
+    if ((gScore.get(endNode.id) ?? Infinity) === Infinity) {
+      return [
+        [startX, 0.15, startZ],
+        [endX, 0.15, endZ]
+      ];
     }
 
-    // Prepend exact player origin and append target
+    const path: [number, number, number][] = [];
+    let currentId: string | null = endNode.id;
+    while (currentId) {
+      const node = this.nodes.get(currentId);
+      if (!node) break;
+      path.unshift([node.x, 0.15, node.z]);
+      currentId = previous.get(currentId) ?? null;
+    }
+
+    if (path.length === 0) {
+      return [
+        [startX, 0.15, startZ],
+        [endX, 0.15, endZ]
+      ];
+    }
+
     path.unshift([startX, 0.15, startZ]);
     path.push([endX, 0.15, endZ]);
-
     return path;
   }
 
@@ -181,27 +210,36 @@ export class RoadNetwork {
    * Generates a 3D glowing GPS ribbon in world space along the road path
    */
   public updateGPSRibbon(path: [number, number, number][] | null): void {
+    const key = path
+      ? path.map(p => `${p[0].toFixed(2)},${p[2].toFixed(2)}`).join('|')
+      : '';
+    if (key === this.ribbonKey) return;
+    this.ribbonKey = key;
+
     if (this.ribbonMesh) {
       this.scene.remove(this.ribbonMesh);
       this.ribbonMesh.geometry.dispose();
-      (this.ribbonMesh.material as THREE.Material).dispose();
       this.ribbonMesh = null;
     }
 
     if (!path || path.length < 2) return;
 
-    const points: THREE.Vector3[] = path.map(p => new THREE.Vector3(p[0], 0.25, p[2]));
+    const points = path.map(
+      p => new THREE.Vector3(p[0], 0.25, p[2])
+    );
     const curve = new THREE.CatmullRomCurve3(points);
-    const tubeGeometry = new THREE.TubeGeometry(curve, points.length * 8, 0.45, 6, false);
-
-    const tubeMaterial = new THREE.MeshBasicMaterial({
-      color: 0x06b6d4, // Glowing Cyan GPS ribbon
-      transparent: true,
-      opacity: 0.75,
-      wireframe: false
-    });
-
-    this.ribbonMesh = new THREE.Mesh(tubeGeometry, tubeMaterial);
+    const segments = Math.max(8, Math.min(64, points.length * 6));
+    const geometry = new THREE.TubeGeometry(curve, segments, 0.45, 6, false);
+    this.ribbonMesh = new THREE.Mesh(geometry, this.ribbonMaterial);
     this.scene.add(this.ribbonMesh);
+  }
+
+  public dispose(): void {
+    if (this.ribbonMesh) {
+      this.scene.remove(this.ribbonMesh);
+      this.ribbonMesh.geometry.dispose();
+      this.ribbonMesh = null;
+    }
+    this.ribbonMaterial.dispose();
   }
 }
