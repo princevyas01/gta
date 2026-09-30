@@ -7,10 +7,32 @@ export const WORLD_EXTENTS = {
   maxX: 1600,
   minZ: -1600,
   maxZ: 1600
-};
+} as const;
 
 export const WORLD_SIZE_X = WORLD_EXTENTS.maxX - WORLD_EXTENTS.minX;
 export const WORLD_SIZE_Z = WORLD_EXTENTS.maxZ - WORLD_EXTENTS.minZ;
+
+export function isInsideWorld(x: number, z: number): boolean {
+  return (
+    x >= WORLD_EXTENTS.minX &&
+    x <= WORLD_EXTENTS.maxX &&
+    z >= WORLD_EXTENTS.minZ &&
+    z <= WORLD_EXTENTS.maxZ
+  );
+}
+
+export function distanceToAABB2D(
+  x: number,
+  z: number,
+  minX: number,
+  maxX: number,
+  minZ: number,
+  maxZ: number
+): number {
+  const dx = x < minX ? minX - x : x > maxX ? x - maxX : 0;
+  const dz = z < minZ ? minZ - z : z > maxZ ? z - maxZ : 0;
+  return Math.hypot(dx, dz);
+}
 
 /**
  * Converts a 3D world position [x, y, z] to normalized map percentage [0..100]
