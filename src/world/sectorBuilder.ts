@@ -7,6 +7,25 @@ export interface StaticCollider {
   type: 'building' | 'barrier' | 'prop';
 }
 
+function seedFromString(value: string): number {
+  let hash = 2166136261;
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function mulberry32(seed: number): () => number {
+  return () => {
+    seed |= 0;
+    seed = (seed + 0x6D2B79F5) | 0;
+    let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+    t = (t + Math.imul(t ^ t >>> 7, 61 | t)) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
 export class SectorBuilder {
   /**
    * Builds the 3D scene group for a canonical sector based on its archetype
@@ -15,6 +34,7 @@ export class SectorBuilder {
     district: DistrictData,
     isHeroLOD: boolean = true
   ): { group: THREE.Group; colliders: StaticCollider[] } {
+    const random = mulberry32(seedFromString(district.id));
     const group = new THREE.Group();
     group.name = `sector_${district.id}`;
     const colliders: StaticCollider[] = [];
@@ -91,7 +111,7 @@ export class SectorBuilder {
           continue;
         }
 
-        const bldg = this.createBuilding(district.archetype, x, z, isHeroLOD);
+        const bldg = this.createBuilding(district.archetype, x, z, isHeroLOD, random);
         group.add(bldg.mesh);
 
         // Register static physical collider box
@@ -99,7 +119,7 @@ export class SectorBuilder {
         colliders.push({ box, type: 'building' });
 
         // Add streetlights on sidewalk corners if Hero LOD
-        if (isHeroLOD && Math.random() > 0.4) {
+        if (isHeroLOD && random() > 0.4) {
           const lightX = x > centerX ? x - 25 : x + 25;
           const lightZ = z > centerZ ? z - 25 : z + 25;
           group.add(this.createStreetlight(lightX, lightZ));
@@ -127,36 +147,37 @@ export class SectorBuilder {
     archetype: string,
     x: number,
     z: number,
-    isHeroLOD: boolean
+    isHeroLOD: boolean,
+    random: () => number
   ): { mesh: THREE.Group } {
     const bldgGroup = new THREE.Group();
 
-    let width = 36 + Math.random() * 14;
-    let depth = 36 + Math.random() * 14;
+    let width = 36 + random() * 14;
+    let depth = 36 + random() * 14;
     let height = 30;
     let mainMaterial: THREE.Material = materialLib.towerConcreteMaterial;
 
     if (archetype === 'downtown' || archetype === 'financial') {
-      height = 55 + Math.random() * 65; // Tall towers (55m - 120m)
-      mainMaterial = Math.random() > 0.4 ? materialLib.towerGlassMaterial : materialLib.towerConcreteMaterial;
+      height = 55 + random() * 65; // Tall towers (55m - 120m)
+      mainMaterial = random() > 0.4 ? materialLib.towerGlassMaterial : materialLib.towerConcreteMaterial;
     } else if (archetype === 'historic') {
-      height = 12 + Math.random() * 10; // 3-4 stories
-      width = 25 + Math.random() * 10;
-      depth = 25 + Math.random() * 10;
+      height = 12 + random() * 10; // 3-4 stories
+      width = 25 + random() * 10;
+      depth = 25 + random() * 10;
       mainMaterial = materialLib.brickHistoricMaterial;
     } else if (archetype === 'heavy_industry' || archetype === 'port' || archetype === 'container_district') {
-      height = 15 + Math.random() * 12; // Industrial warehouse
-      width = 45 + Math.random() * 20;
-      depth = 35 + Math.random() * 15;
+      height = 15 + random() * 12; // Industrial warehouse
+      width = 45 + random() * 20;
+      depth = 35 + random() * 15;
       mainMaterial = materialLib.industrialRustMaterial;
     } else if (archetype === 'nightlife') {
-      height = 25 + Math.random() * 25;
+      height = 25 + random() * 25;
       mainMaterial = materialLib.towerConcreteMaterial;
     } else {
       // Suburbs / rural / coastal
-      height = 10 + Math.random() * 8;
-      width = 24 + Math.random() * 10;
-      depth = 24 + Math.random() * 10;
+      height = 10 + random() * 8;
+      width = 24 + random() * 10;
+      depth = 24 + random() * 10;
       mainMaterial = materialLib.towerConcreteMaterial;
     }
 
@@ -176,9 +197,9 @@ export class SectorBuilder {
       bldgGroup.add(roofHvacMesh);
 
       // Nightlife / Downtown illuminated signage
-      if (archetype === 'nightlife' || (archetype === 'downtown' && Math.random() > 0.6)) {
+      if (archetype === 'nightlife' || (archetype === 'downtown' && random() > 0.6)) {
         const signGeo = new THREE.PlaneGeometry(width * 0.7, 4);
-        const signMat = Math.random() > 0.5 ? materialLib.neonPink : materialLib.neonCyan;
+        const signMat = random() > 0.5 ? materialLib.neonPink : materialLib.neonCyan;
         const signMesh = new THREE.Mesh(signGeo, signMat);
         signMesh.position.set(0, height - 6, depth / 2 + 0.2);
         bldgGroup.add(signMesh);
