@@ -5,9 +5,12 @@ export interface InputState {
   right: boolean;
   sprint: boolean;
   jump: boolean;
+  jumpPressed: boolean;
   crouch: boolean;
   interact: boolean; // E or F
+  interactPressed: boolean;
   reload: boolean;
+  reloadPressed: boolean;
   fire: boolean;
   aim: boolean;
   weaponWheel: boolean;
@@ -29,9 +32,12 @@ export class InputManager {
     right: false,
     sprint: false,
     jump: false,
+    jumpPressed: false,
     crouch: false,
     interact: false,
+    interactPressed: false,
     reload: false,
+    reloadPressed: false,
     fire: false,
     aim: false,
     weaponWheel: false,
@@ -46,7 +52,6 @@ export class InputManager {
   };
 
   private targetElement: HTMLElement | null = null;
-  private pointerLockedElement: Element | null = null;
 
   constructor() {
     this.handleKeyDown = this.handleKeyDown.bind(this);
@@ -97,10 +102,31 @@ export class InputManager {
     this.state.isPointerLocked = !!document.pointerLockElement;
   }
 
+  // Explicit command callbacks for UI / mobile buttons
+  public pressInteractForFrame(): void {
+    this.state.interact = true;
+    this.state.interactPressed = true;
+  }
+
+  public pressFireForFrame(): void {
+    this.state.fire = true;
+  }
+
+  public pressJumpForFrame(): void {
+    this.state.jump = true;
+    this.state.jumpPressed = true;
+  }
+
   private handleKeyDown(e: KeyboardEvent): void {
     // If typing in an input element, do not capture game hotkeys
     if ((e.target as HTMLElement)?.tagName === 'INPUT' || (e.target as HTMLElement)?.tagName === 'TEXTAREA') {
       return;
+    }
+
+    if (e.repeat) {
+      if (['KeyM', 'KeyP', 'Escape', 'Backquote', 'F3', 'KeyV', 'Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6'].includes(e.code)) {
+        return;
+      }
     }
 
     switch (e.code) {
@@ -125,6 +151,9 @@ export class InputManager {
         this.state.sprint = true;
         break;
       case 'Space':
+        if (!this.state.jump) {
+          this.state.jumpPressed = true;
+        }
         this.state.jump = true;
         e.preventDefault();
         break;
@@ -133,9 +162,15 @@ export class InputManager {
         break;
       case 'KeyE':
       case 'KeyF':
+        if (!this.state.interact) {
+          this.state.interactPressed = true;
+        }
         this.state.interact = true;
         break;
       case 'KeyR':
+        if (!this.state.reload) {
+          this.state.reloadPressed = true;
+        }
         this.state.reload = true;
         break;
       case 'Tab':
@@ -202,6 +237,7 @@ export class InputManager {
         break;
       case 'Space':
         this.state.jump = false;
+        this.state.jumpPressed = false;
         break;
       case 'KeyC':
         this.state.crouch = false;
@@ -209,9 +245,11 @@ export class InputManager {
       case 'KeyE':
       case 'KeyF':
         this.state.interact = false;
+        this.state.interactPressed = false;
         break;
       case 'KeyR':
         this.state.reload = false;
+        this.state.reloadPressed = false;
         break;
       case 'Tab':
         this.state.weaponWheel = false;
@@ -243,11 +281,14 @@ export class InputManager {
   }
 
   /**
-   * Resets single-frame impulse events (e.g. mouse deltas and toggle triggers)
+   * Resets single-frame impulse events (e.g. mouse deltas, edge triggers, and toggle triggers)
    */
   public flush(): void {
     this.state.mouseX = 0;
     this.state.mouseY = 0;
+    this.state.jumpPressed = false;
+    this.state.interactPressed = false;
+    this.state.reloadPressed = false;
     this.state.toggleMap = false;
     this.state.togglePhone = false;
     this.state.toggleDebug = false;
