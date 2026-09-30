@@ -315,7 +315,7 @@ export const CANONICAL_DISTRICTS: DistrictData[] = [
   }
 ];
 
-export function getDistrictAt(x: number, z: number): DistrictData {
+export function getDistrictAt(x: number, z: number): DistrictData | null {
   for (const district of CANONICAL_DISTRICTS) {
     if (
       x >= district.bounds.minX &&
@@ -326,6 +326,5 @@ export function getDistrictAt(x: number, z: number): DistrictData {
       return district;
     }
   }
-  // Default to Aurelio Central if outside explicit bounds
-  return CANONICAL_DISTRICTS[0];
+  return null;
 }
