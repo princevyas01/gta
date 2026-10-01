@@ -5,23 +5,27 @@ import { ParticleSystem } from '../rendering/particles';
 import { soundEngine } from '../core/audio';
 import { InputState } from '../core/input';
 import { eventBus } from '../core/events';
-import { distance3D } from '../core/math';
 import { WeaponDefinition, InventoryItem } from '../core/types';
 import type { VehicleInstance } from '../vehicles/vehicleController';
+import type { PhysicsWorld } from '../physics/physicsWorld';
+import { getHitDirection, HitDirection } from './hitReactionTypes';
 
-interface ActiveRocket {
+export interface ActiveRocket {
   position: THREE.Vector3;
   velocity: THREE.Vector3;
   life: number;
+  weaponId: string;
+  damage: number;
 }
 
 export class CombatSystem {
   private scene: THREE.Scene;
+  private physicsWorld: PhysicsWorld | null = null;
   private fireTimer = 0;
   private isReloading = false;
   private reloadTimer = 0;
   private fireLatch = false;
-  private activeRockets: ActiveRocket[] = [];
+  public activeRockets: ActiveRocket[] = [];
 
   // Pooled scratch objects
   private readonly fireRay = new THREE.Ray();
@@ -31,9 +35,15 @@ export class CombatSystem {
   private readonly targetCenter = new THREE.Vector3();
   private readonly targetSphere = new THREE.Sphere(new THREE.Vector3(), 0);
   private readonly hitPoint = new THREE.Vector3();
+  private readonly impactPosScratch = new THREE.Vector3();
 
-  constructor(scene: THREE.Scene) {
+  constructor(scene: THREE.Scene, physicsWorld?: PhysicsWorld | null) {
     this.scene = scene;
+    if (physicsWorld) this.physicsWorld = physicsWorld;
+  }
+
+  public setPhysicsWorld(pw: PhysicsWorld | null): void {
+    this.physicsWorld = pw;
   }
 
   public update(
@@ -42,7 +52,12 @@ export class CombatSystem {
     player: PlayerController,
     vehicleMgr: VehicleManager,
     particles: ParticleSystem,
-    npcTargets: { id?: string; position: THREE.Vector3; takeDamage: (dmg: number) => void; isDead: boolean }[] = []
+    npcTargets: {
+      id?: string;
+      position: THREE.Vector3;
+      takeDamage: (dmg: number, dir?: HitDirection) => void;
+      isDead: boolean;
+    }[] = []
   ): void {
     const { def, item } = player.getActiveWeapon();
 
@@ -79,7 +94,7 @@ export class CombatSystem {
       }
     }
 
-    // Update active launcher rockets
+    // Update active launcher rockets using launch-time damage (P0 Combat fix)
     for (let i = this.activeRockets.length - 1; i >= 0; i--) {
       const rocket = this.activeRockets[i];
       rocket.life -= dt;
@@ -91,25 +106,40 @@ export class CombatSystem {
       // Check ground or target proximity
       let exploded = rocket.life <= 0 || rocket.position.y <= 0.2;
 
-      // Check vehicle hits
-      for (const v of vehicleMgr.vehicles) {
-        if (!v.isDestroyed && distance3D([rocket.position.x, rocket.position.y, rocket.position.z], [v.position.x, v.position.y, v.position.z]) < 3.5) {
-          v.takeDamage(def.damage, particles);
-          exploded = true;
-          break;
+      // Check vehicle hits with squared distance
+      const rPos = rocket.position;
+      for (let vIdx = 0; vIdx < vehicleMgr.vehicles.length; vIdx++) {
+        const v = vehicleMgr.vehicles[vIdx];
+        if (!v.isDestroyed) {
+          const dx = rPos.x - v.position.x;
+          const dy = rPos.y - v.position.y;
+          const dz = rPos.z - v.position.z;
+          if (dx * dx + dy * dy + dz * dz < 3.5 * 3.5) {
+            v.takeDamage(rocket.damage, particles);
+            exploded = true;
+            break;
+          }
         }
       }
 
-      // Check NPC hits
-      for (const npc of npcTargets) {
-        if (!npc.isDead && distance3D([rocket.position.x, rocket.position.y, rocket.position.z], [npc.position.x, npc.position.y, npc.position.z]) < 4.0) {
-          npc.takeDamage(def.damage);
-          exploded = true;
+      // Check NPC hits with squared distance
+      for (let nIdx = 0; nIdx < npcTargets.length; nIdx++) {
+        const npc = npcTargets[nIdx];
+        if (!npc.isDead) {
+          const dx = rPos.x - npc.position.x;
+          const dy = rPos.y - npc.position.y;
+          const dz = rPos.z - npc.position.z;
+          if (dx * dx + dy * dy + dz * dz < 4.0 * 4.0) {
+            npc.takeDamage(rocket.damage, 'front');
+            exploded = true;
+            break;
+          }
         }
       }
 
       if (exploded) {
         particles.emitExplosion(rocket.position);
+        player.camera.addShake(0.85); // Explosion camera shake
         soundEngine.playGunshot('launcher');
         this.activeRockets.splice(i, 1);
       }
@@ -128,10 +158,20 @@ export class CombatSystem {
     player: PlayerController,
     vehicleMgr: VehicleManager,
     particles: ParticleSystem,
-    npcTargets: { id?: string; position: THREE.Vector3; takeDamage: (dmg: number) => void; isDead: boolean }[]
+    npcTargets: {
+      id?: string;
+      position: THREE.Vector3;
+      takeDamage: (dmg: number, dir?: HitDirection) => void;
+      isDead: boolean;
+    }[]
   ): void {
     item.ammo--;
     soundEngine.playGunshot(def.class);
+
+    // Weapon Recoil & Camera Kick (Pages 43, 52)
+    player.model.triggerRecoil(def.recoil || 1.0);
+    const kickAmount = def.class === 'shotgun' ? 0.32 : def.class === 'launcher' ? 0.45 : 0.14;
+    player.camera.addShake(kickAmount);
 
     const muzzlePos = this.muzzleScratch.copy(player.position).add(this.muzzleOffset);
     const aimDir = this.aimScratch;
@@ -148,13 +188,29 @@ export class CombatSystem {
       this.activeRockets.push({
         position: muzzlePos.clone(),
         velocity: aimDir.clone().multiplyScalar(45),
-        life: 3.5
+        life: 3.5,
+        weaponId: def.id,
+        damage: def.damage
       });
       eventBus.emit('WEAPON_FIRED', {
         weaponId: def.id,
         ammoLeft: item.ammo
       });
       return;
+    }
+
+    // 1. Raycast world geometry first to get occlusion distance (P0 Line-of-sight fix)
+    let occlusionDistance = def.range;
+    if (this.physicsWorld) {
+      const worldHit = this.physicsWorld.castRay(
+        { x: muzzlePos.x, y: muzzlePos.y, z: muzzlePos.z },
+        { x: aimDir.x, y: aimDir.y, z: aimDir.z },
+        def.range,
+        true
+      );
+      if (worldHit && worldHit.hit) {
+        occlusionDistance = worldHit.toi;
+      }
     }
 
     const ray = this.fireRay;
@@ -165,13 +221,15 @@ export class CombatSystem {
       distance: number;
       kind: 'vehicle' | 'npc';
       vehicle?: VehicleInstance;
-      npc?: { id?: string; takeDamage: (dmg: number) => void };
+      npc?: { id?: string; position: THREE.Vector3; takeDamage: (dmg: number, dir?: HitDirection) => void };
       point: THREE.Vector3;
     };
 
     let nearest: HitCandidate | null = null;
 
-    for (const vehicle of vehicleMgr.vehicles) {
+    // Check vehicle hits strictly up to occlusion distance
+    for (let i = 0; i < vehicleMgr.vehicles.length; i++) {
+      const vehicle = vehicleMgr.vehicles[i];
       if (vehicle.isDestroyed) continue;
       this.targetCenter.copy(vehicle.position);
       this.targetCenter.y += 1;
@@ -182,7 +240,7 @@ export class CombatSystem {
       if (!hit) continue;
 
       const distance = muzzlePos.distanceTo(hit);
-      if (distance > def.range) continue;
+      if (distance > occlusionDistance) continue; // Occluded by wall/world
 
       if (!nearest || distance < nearest.distance) {
         nearest = {
@@ -194,7 +252,9 @@ export class CombatSystem {
       }
     }
 
-    for (const npc of npcTargets) {
+    // Check NPC hits strictly up to occlusion distance
+    for (let i = 0; i < npcTargets.length; i++) {
+      const npc = npcTargets[i];
       if (npc.isDead) continue;
       this.targetCenter.copy(npc.position);
       this.targetCenter.y += 1;
@@ -205,7 +265,7 @@ export class CombatSystem {
       if (!hit) continue;
 
       const distance = muzzlePos.distanceTo(hit);
-      if (distance > def.range) continue;
+      if (distance > occlusionDistance) continue; // Occluded by wall/world
 
       if (!nearest || distance < nearest.distance) {
         nearest = {
@@ -220,20 +280,31 @@ export class CombatSystem {
     if (nearest) {
       if (nearest.kind === 'vehicle' && nearest.vehicle) {
         nearest.vehicle.takeDamage(def.damage, particles);
-        particles.emitExplosion(nearest.point);
+        particles.emitSurfaceImpact(nearest.point, 'metal');
         eventBus.emit('COMBAT_HIT', {
           target: 'vehicle',
-          id: nearest.vehicle.def.id,
+          id: nearest.vehicle.id,
           damage: def.damage
         });
       } else if (nearest.kind === 'npc' && nearest.npc) {
-        nearest.npc.takeDamage(def.damage);
+        const forward = { x: Math.sin(player.facingAngle), z: Math.cos(player.facingAngle) };
+        const hitDir = getHitDirection(
+          forward,
+          { x: nearest.point.x, z: nearest.point.z },
+          { x: nearest.npc.position.x, z: nearest.npc.position.z }
+        );
+        nearest.npc.takeDamage(def.damage, hitDir);
+        particles.emitBulletSpark(nearest.point);
         eventBus.emit('COMBAT_HIT', {
           target: 'npc',
           id: nearest.npc.id,
           damage: def.damage
         });
       }
+    } else if (occlusionDistance < def.range) {
+      // Impact on world wall / obstacle with surface particle reaction (Page 53)
+      this.impactPosScratch.copy(muzzlePos).addScaledVector(aimDir, occlusionDistance);
+      particles.emitSurfaceImpact(this.impactPosScratch, 'concrete');
     }
 
     eventBus.emit('WEAPON_FIRED', {
@@ -248,5 +319,6 @@ export class CombatSystem {
     this.isReloading = false;
     this.reloadTimer = 0;
     this.fireLatch = false;
+    this.physicsWorld = null;
   }
 }
