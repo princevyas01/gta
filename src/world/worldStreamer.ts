@@ -1,7 +1,7 @@
 import * as THREE from 'three';
-import { CANONICAL_DISTRICTS, getDistrictAt } from '../data/districts';
+import { CANONICAL_DISTRICTS } from '../data/districts';
 import { SectorBuilder, StaticCollider } from './sectorBuilder';
-import { distanceToAABB2D } from '../core/math';
+import { PhysicsColliderManager } from '../physics/physicsColliders';
 
 interface LoadedSector {
   districtId: string;
@@ -13,6 +13,7 @@ interface LoadedSector {
 
 export class WorldStreamer {
   private scene: THREE.Scene;
+  private colliderManager: PhysicsColliderManager | null = null;
   private loadedSectors: Map<string, LoadedSector> = new Map();
   public allColliders: StaticCollider[] = [];
   public currentDistrictId: string = 'D01';
@@ -22,7 +23,9 @@ export class WorldStreamer {
   private readonly streamRadius = 850; // Proxy LOD
   private readonly evictionBufferTime = 4000; // 4 seconds hysteresis
 
-  // Scratch memory & dirty tracking
+  // Scratch memory & zero-allocation hot-loop tracking (Page 23)
+  private readonly desiredHeroIds = new Set<string>();
+  private readonly desiredProxyIds = new Set<string>();
   private colliderVersion = 0;
   private builtColliderVersion = -1;
   private readonly playerSphere = new THREE.Sphere(new THREE.Vector3(), 0);
@@ -30,8 +33,13 @@ export class WorldStreamer {
   private readonly normalScratch = new THREE.Vector3();
   private readonly zeroNormal = new THREE.Vector3();
 
-  constructor(scene: THREE.Scene) {
+  constructor(scene: THREE.Scene, colliderManager?: PhysicsColliderManager) {
     this.scene = scene;
+    if (colliderManager) this.colliderManager = colliderManager;
+  }
+
+  public setColliderManager(cm: PhysicsColliderManager | null): void {
+    this.colliderManager = cm;
   }
 
   private markColliderTopologyDirty(): void {
@@ -52,56 +60,75 @@ export class WorldStreamer {
   }
 
   public update(playerPos: THREE.Vector3): void {
-    const currentDistrict = getDistrictAt(playerPos.x, playerPos.z);
-    this.currentDistrictId = currentDistrict?.id ?? 'OUTSIDE';
-
     const now = performance.now();
-    const desiredSectors: { districtId: string; isHero: boolean }[] = [];
+    this.desiredHeroIds.clear();
+    this.desiredProxyIds.clear();
 
-    const distToBounds = (d: typeof CANONICAL_DISTRICTS[number]) =>
-      distanceToAABB2D(
-        playerPos.x,
-        playerPos.z,
-        d.bounds.minX,
-        d.bounds.maxX,
-        d.bounds.minZ,
-        d.bounds.maxZ
-      );
+    let nearestId = this.currentDistrictId;
+    let nearestDistanceSq = Infinity;
+    const heroRadiusSq = this.heroRadius * this.heroRadius;
+    const streamRadiusSq = this.streamRadius * this.streamRadius;
 
-    // Evaluate all 26 canonical districts
+    // Optimized hot-path query without temporary closures (Page 23)
     for (const district of CANONICAL_DISTRICTS) {
-      const dist = distToBounds(district);
-      if (dist <= this.heroRadius) {
-        desiredSectors.push({ districtId: district.id, isHero: true });
-      } else if (dist <= this.streamRadius) {
-        desiredSectors.push({ districtId: district.id, isHero: false });
+      const dx = playerPos.x < district.bounds.minX
+        ? district.bounds.minX - playerPos.x
+        : playerPos.x > district.bounds.maxX
+          ? playerPos.x - district.bounds.maxX
+          : 0;
+      const dz = playerPos.z < district.bounds.minZ
+        ? district.bounds.minZ - playerPos.z
+        : playerPos.z > district.bounds.maxZ
+          ? playerPos.z - district.bounds.maxZ
+          : 0;
+
+      const distSq = dx * dx + dz * dz;
+
+      if (distSq < nearestDistanceSq) {
+        nearestDistanceSq = distSq;
+        nearestId = district.id;
+      }
+
+      if (distSq <= heroRadiusSq) {
+        this.desiredHeroIds.add(district.id);
+      } else if (distSq <= streamRadiusSq) {
+        this.desiredProxyIds.add(district.id);
       }
     }
 
-    // Always ensure current district is hero LOD if inside world
-    if (currentDistrict && !desiredSectors.some(s => s.districtId === currentDistrict.id)) {
-      desiredSectors.unshift({ districtId: currentDistrict.id, isHero: true });
-    }
+    this.currentDistrictId = nearestId;
+    // Always keep nearest/current district in hero LOD
+    this.desiredHeroIds.add(nearestId);
 
-    // Load or promote sectors
-    for (const req of desiredSectors) {
-      const existing = this.loadedSectors.get(req.districtId);
+    // Promote or load hero sectors
+    for (const id of this.desiredHeroIds) {
+      const existing = this.loadedSectors.get(id);
       if (!existing) {
-        this.loadSector(req.districtId, req.isHero, now);
+        this.loadSector(id, true, now);
       } else {
         existing.lastActiveTime = now;
-        // Promote from proxy to hero LOD if close
-        if (req.isHero && !existing.isHeroLOD) {
-          this.unloadSector(req.districtId);
-          this.loadSector(req.districtId, true, now);
+        if (!existing.isHeroLOD) {
+          this.unloadSector(id);
+          this.loadSector(id, true, now);
         }
       }
     }
 
-    // Unload distant sectors that expired their hysteresis window
+    // Load proxy sectors
+    for (const id of this.desiredProxyIds) {
+      if (this.desiredHeroIds.has(id)) continue;
+      const existing = this.loadedSectors.get(id);
+      if (!existing) {
+        this.loadSector(id, false, now);
+      } else {
+        existing.lastActiveTime = now;
+      }
+    }
+
+    // Unload expired sectors
     for (const [id, sector] of this.loadedSectors.entries()) {
-      const stillDesired = desiredSectors.some(s => s.districtId === id);
-      if (!stillDesired) {
+      const isDesired = this.desiredHeroIds.has(id) || this.desiredProxyIds.has(id);
+      if (!isDesired) {
         if (now - sector.lastActiveTime > this.evictionBufferTime) {
           this.unloadSector(id);
         }
@@ -117,6 +144,11 @@ export class WorldStreamer {
 
     const { group, colliders } = SectorBuilder.buildSector(data, isHeroLOD);
     this.scene.add(group);
+
+    // Register colliders in Rapier physics world if available
+    if (this.colliderManager && isHeroLOD) {
+      this.colliderManager.registerSectorColliders(districtId, colliders);
+    }
 
     this.loadedSectors.set(districtId, {
       districtId,
@@ -138,6 +170,12 @@ export class WorldStreamer {
           mesh.geometry?.dispose();
         }
       });
+
+      // Unregister static colliders from Rapier physics world
+      if (this.colliderManager) {
+        this.colliderManager.unregisterSectorColliders(districtId);
+      }
+
       this.loadedSectors.delete(districtId);
       this.markColliderTopologyDirty();
     }
@@ -202,6 +240,7 @@ export class WorldStreamer {
       this.unloadSector(id);
     }
     this.allColliders.length = 0;
+    this.colliderManager?.clear();
     this.markColliderTopologyDirty();
   }
 }
