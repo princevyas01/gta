@@ -1,13 +1,29 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { useGameStore } from './store';
 import { Shield, Heart, Coins, Crosshair, Gauge, Navigation } from 'lucide-react';
 import { worldToMapPercent } from '../core/math';
 import { CANONICAL_POIS } from '../data/pois';
+import { eventBus } from '../core/events';
 
 export const HUD: React.FC<{ playerPos: [number, number, number]; playerHeading: number }> = ({
   playerPos,
   playerHeading
 }) => {
+  const [hitMarker, setHitMarker] = useState(false);
+
+  useEffect(() => {
+    let timeout: ReturnType<typeof setTimeout>;
+    const unsubscribe = eventBus.on('COMBAT_HIT', () => {
+      setHitMarker(true);
+      clearTimeout(timeout);
+      timeout = setTimeout(() => setHitMarker(false), 120);
+    });
+    return () => {
+      clearTimeout(timeout);
+      unsubscribe();
+    };
+  }, []);
+
   const {
     health,
     armor,
@@ -31,6 +47,27 @@ export const HUD: React.FC<{ playerPos: [number, number, number]; playerHeading:
 
   return (
     <div style={{ pointerEvents: 'none', position: 'absolute', inset: 0, overflow: 'hidden' }}>
+      {/* Center Screen Crosshair Hit Marker (Pages 8, 52, 82) */}
+      {hitMarker && (
+        <div
+          style={{
+            position: 'absolute',
+            top: '50%',
+            left: '50%',
+            width: 24,
+            height: 24,
+            transform: 'translate(-50%, -50%) rotate(45deg)',
+            pointerEvents: 'none',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center'
+          }}
+        >
+          <div style={{ position: 'absolute', width: 14, height: 2, background: '#ef4444' }} />
+          <div style={{ position: 'absolute', width: 2, height: 14, background: '#ef4444' }} />
+        </div>
+      )}
+
       {/* Top Left: District & Time */}
       <div style={{ position: 'absolute', top: 20, left: 24, display: 'flex', flexDirection: 'column', gap: 4 }}>
         <div style={{ fontSize: 22, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#f8fafc', textShadow: '0 2px 8px rgba(0,0,0,0.8)' }}>
