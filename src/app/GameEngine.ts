@@ -11,8 +11,25 @@ import { MissionManager } from '../missions/missionManager';
 import { gameClock } from '../core/clock';
 import { inputManager } from '../core/input';
 import { useGameStore } from '../ui/store';
-import { SaveManager } from '../save/saveManager';
+import { SaveManager, SAVE_SCHEMA_VERSION } from '../save/saveManager';
 import { CANONICAL_DISTRICTS } from '../data/districts';
+import { CANONICAL_POIS } from '../data/pois';
+import { SaveGameSchemaV3 } from '../core/types';
+import { PhysicsWorld } from '../physics/physicsWorld';
+import { PhysicsColliderManager } from '../physics/physicsColliders';
+import { NavMeshService } from '../navigation/navMeshService';
+import { soundEngine } from '../core/audio';
+import { distance2D } from '../core/math';
+
+export interface TelemetryData {
+  playerCoords: [number, number, number];
+  playerHeading: number;
+  activeVehicle: { id: string; name: string; speed: number; health: number } | null;
+  fps: number;
+  drawCalls: number;
+  triangles: number;
+  activeCellCount: number;
+}
 
 export class GameEngine {
   public sceneManager: SceneManager;
@@ -24,15 +41,22 @@ export class GameEngine {
   public combatSystem: CombatSystem;
   public wantedSystem: WantedSystem;
   public missionManager: MissionManager;
+  public physicsWorld: PhysicsWorld | null = null;
+  public colliderManager: PhysicsColliderManager | null = null;
+  public navMeshService: NavMeshService | null = null;
 
   private isRunning: boolean = false;
-  private animationFrameId: number | null = null;
   private frameCounter: number = 0;
   private fpsTimer: number = 0;
   private currentFps: number = 60;
 
+  private readonly readyPromise: Promise<void>;
+  private readonly snapshotListeners = new Set<(snapshot: TelemetryData) => void>();
+  private readonly discoveredDistricts = new Set<string>(['D01']);
+  private readonly discoveredPOIs = new Set<string>(['poi-aurelio-tower']);
+
   constructor(container: HTMLElement) {
-    // 1. Core Three.js Scene & Renderer
+    // 1. Core Three.js Scene & Renderer (WebGPURenderer with WebGL2 fallback)
     this.sceneManager = new SceneManager(container);
 
     // 2. World Streamer & Road Graph
@@ -60,29 +84,142 @@ export class GameEngine {
     // 9. Input & Event Listeners
     inputManager.attach(container);
 
-    // Try loading persistent save state
-    const saved = SaveManager.load();
-    if (saved && saved.player) {
-      this.player.position.set(saved.player.position[0], saved.player.position[1], saved.player.position[2]);
-      this.player.stats = saved.player.stats;
+    // 10. Explicit engine readiness promise (Pages 39, 100)
+    this.readyPromise = this.boot(container);
+
+    // Load persistent save state synchronously during initial boot
+    const saved = SaveManager.loadSync();
+    this.player.position.fromArray(saved.player.position);
+    this.player.facingAngle = saved.player.rotationY;
+    this.player.stats = structuredClone(saved.player.stats);
+    this.player.inventory = structuredClone(saved.player.inventory);
+    this.player.activeWeaponIndex = Math.min(
+      saved.player.activeWeaponIndex,
+      Math.max(0, this.player.inventory.length - 1)
+    );
+
+    saved.world.discoveredDistricts.forEach(d => this.discoveredDistricts.add(d));
+    saved.world.discoveredPOIs.forEach(p => this.discoveredPOIs.add(p));
+
+    this.missionManager.completedMissionIds = [...saved.missions.completedMissionIds];
+    if (saved.missions.currentMissionId) {
+      this.missionManager.startMission(saved.missions.currentMissionId, false);
+      this.missionManager.currentStageIndex = Math.max(
+        0,
+        Math.min(
+          saved.missions.currentStageIndex,
+          (this.missionManager.activeMission?.stages.length ?? 1) - 1
+        )
+      );
+    } else {
+      this.missionManager.startMission('m_getaway_blueprint', false);
     }
 
+    gameClock.timeOfDay = saved.world.timeOfDay;
+    useGameStore.getState().updateStats({ weather: saved.world.weather });
+
     this.animate = this.animate.bind(this);
+  }
+
+  private async boot(container: HTMLElement): Promise<void> {
+    void container;
+    await this.sceneManager.ready;
+    try {
+      this.physicsWorld = await PhysicsWorld.create();
+      this.colliderManager = new PhysicsColliderManager(this.physicsWorld);
+      this.streamer.setColliderManager(this.colliderManager);
+      this.navMeshService = await NavMeshService.create();
+      this.player.attachPhysics(this.physicsWorld);
+      this.combatSystem.setPhysicsWorld(this.physicsWorld);
+    } catch (err) {
+      console.warn('[GameEngine] Physics or Nav initialization failed:', err);
+    }
+  }
+
+  public get ready(): Promise<void> {
+    return this.readyPromise;
+  }
+
+  public onSnapshot(listener: (snapshot: TelemetryData) => void): () => void {
+    this.snapshotListeners.add(listener);
+    return () => this.snapshotListeners.delete(listener);
+  }
+
+  private emitSnapshot(snapshot: TelemetryData): void {
+    for (const listener of this.snapshotListeners) {
+      listener(snapshot);
+    }
   }
 
   public start(): void {
     if (this.isRunning) return;
     this.isRunning = true;
     gameClock.reset();
-    this.animationFrameId = requestAnimationFrame(this.animate);
+    this.sceneManager.setAnimationLoop(this.animate);
   }
 
   public stop(): void {
     this.isRunning = false;
-    if (this.animationFrameId !== null) {
-      cancelAnimationFrame(this.animationFrameId);
-      this.animationFrameId = null;
+    this.sceneManager.stopAnimationLoop();
+  }
+
+  public restartCheckpoint(): void {
+    if (this.player.currentVehicle) {
+      this.vehicleManager.togglePlayerVehicle(this.player.position, this.streamer.allColliders);
     }
+    this.player.position.set(0, 0.5, 0);
+    this.player.velocity.set(0, 0, 0);
+    this.player.stats.health = 100;
+    this.player.stats.armor = 100;
+    this.player.stats.stamina = 100;
+    this.wantedSystem.setHeat(0);
+    if (this.missionManager.activeMission) {
+      this.missionManager.resetToCheckpoint();
+    } else {
+      this.missionManager.startMission('m_getaway_blueprint', false);
+    }
+  }
+
+  public async saveGame(): Promise<boolean> {
+    const rawWeather = useGameStore.getState().weather;
+    const weather: 'clear' | 'overcast' | 'rain' | 'fog' =
+      rawWeather === 'overcast' || rawWeather === 'rain' || rawWeather === 'fog'
+        ? rawWeather
+        : 'clear';
+
+    // Dynamically record current active districts and nearby POIs (Pages 11, 86)
+    this.streamer.getActiveSectorIds().forEach(id => this.discoveredDistricts.add(id));
+    for (const poi of CANONICAL_POIS) {
+      if (distance2D(this.player.position.x, this.player.position.z, poi.worldPosition[0], poi.worldPosition[2]) < 180) {
+        this.discoveredPOIs.add(poi.id);
+      }
+    }
+
+    const schema: SaveGameSchemaV3 = {
+      version: SAVE_SCHEMA_VERSION,
+      timestamp: Date.now(),
+      player: {
+        position: [this.player.position.x, this.player.position.y, this.player.position.z],
+        rotationY: this.player.facingAngle,
+        stats: structuredClone(this.player.stats),
+        inventory: structuredClone(this.player.inventory),
+        activeWeaponIndex: this.player.activeWeaponIndex,
+        currentVehicleInstanceId: this.player.currentVehicle ? this.player.currentVehicle.id : null
+      },
+      world: {
+        discoveredDistricts: Array.from(this.discoveredDistricts),
+        discoveredPOIs: Array.from(this.discoveredPOIs),
+        timeOfDay: gameClock.timeOfDay,
+        weather
+      },
+      missions: {
+        completedMissionIds: [...this.missionManager.completedMissionIds],
+        currentMissionId: this.missionManager.activeMission?.id ?? null,
+        currentStageIndex: this.missionManager.currentStageIndex
+      },
+      ownedVehicles: this.vehicleManager.getOwnedVehicles()
+    };
+    return await SaveManager.save(schema);
   }
 
   private animate(): void {
@@ -106,22 +243,30 @@ export class GameEngine {
       useGameStore.getState().setDebugOpen(!isDebugOpen);
     }
 
-    // Fixed-step simulation updates (60Hz)
-    for (let i = 0; i < fixedSteps; i++) {
-      this.fixedUpdate(1 / 60);
+    // Modal Pause Semantics: Map or Phone open pauses simulation
+    const ui = useGameStore.getState();
+    const gameplayPaused = ui.isMapOpen || ui.isPhoneOpen;
+
+    if (gameplayPaused) {
+      this.player.camera.resetInput();
     }
 
-    // Render pass
-    const targetFocusPos = this.player.currentVehicle
+    // Fixed-step simulation updates (60Hz)
+    for (let i = 0; i < fixedSteps; i++) {
+      const fixedDt = 1 / 60;
+      if (!gameplayPaused) {
+        this.fixedUpdate(fixedDt);
+      }
+    }
+
+    // Sky & Lighting updates (Page 21)
+    const weather = useGameStore.getState().weather;
+    const activePos = this.player.currentVehicle
       ? this.player.currentVehicle.position
       : this.player.position;
+    this.sceneManager.atmosphere.update(gameClock.timeOfDay, activePos, weather);
 
-    this.sceneManager.atmosphere.update(gameClock.timeOfDay, targetFocusPos, 'clear');
-    this.sceneManager.particles.update(delta);
-
-    const renderInfo = this.sceneManager.render();
-
-    // FPS calculation
+    // Frame-rate measurement
     this.frameCounter++;
     this.fpsTimer += delta;
     if (this.fpsTimer >= 0.5) {
@@ -130,35 +275,37 @@ export class GameEngine {
       this.fpsTimer = 0;
     }
 
-    // Sync Telemetry & UI Store
+    // Render 3D Scene
+    const renderInfo = this.sceneManager.render();
+
+    // Sync Store & Emit Throttled Telemetry Snapshot
     this.syncStore(renderInfo);
 
-    // Flush single-frame input impulses
+    // Flush single-frame input edges
     inputManager.flush();
-
-    this.animationFrameId = requestAnimationFrame(this.animate);
   }
 
   private fixedUpdate(dt: number): void {
-    // 1. Update Camera look angle from mouse movement
-    this.player.camera.handleMouseMove(inputManager.state.mouseX, inputManager.state.mouseY);
-
-    // 2. Determine target position (Player or Vehicle)
     const activePos = this.player.currentVehicle
       ? this.player.currentVehicle.position
       : this.player.position;
 
-    // 3. Dynamic Sector Streaming
+    // 1. STREAMING CELL UPDATES
     this.streamer.update(activePos);
 
-    // 4. Update Vehicles
+    // 2. VEHICLE INTERACTION (ENTER / EXIT)
+    if (inputManager.state.interactPressed) {
+      this.vehicleManager.togglePlayerVehicle(this.player.position, this.streamer.allColliders);
+    }
+
+    // 3. VEHICLE CONTROLLER
     const targetAimAngle = this.player.camera.azimuth + Math.PI;
     this.vehicleManager.update(
       inputManager.state,
       dt,
       this.sceneManager.particles,
       this.streamer.allColliders,
-      this.player.position,
+      activePos,
       targetAimAngle
     );
 
@@ -167,14 +314,14 @@ export class GameEngine {
       this.player.currentVehicle = this.vehicleManager.playerVehicle;
     }
 
-    // 5. Update Player Controller
+    // 4. PLAYER PHYSICS (Rapier Authoritative)
     this.player.update(inputManager.state, dt, this.streamer);
 
-    // 6. Update NPCs
+    // 5. NPC CROWD / AI
     const isGunfire = inputManager.state.fire;
     this.npcManager.update(dt, this.player.position, isGunfire);
 
-    // 7. Update Combat System
+    // 6. COMBAT / PROJECTILES
     if (!this.player.currentVehicle) {
       this.combatSystem.update(
         inputManager.state,
@@ -186,13 +333,13 @@ export class GameEngine {
       );
     }
 
-    // 8. Update Law Enforcement & Wanted Heat
+    // 7. LAW / DISPATCH
     this.wantedSystem.update(dt, this.player.position, this.vehicleManager);
 
-    // 9. Update Mission Engine & GPS Route Ribbon
+    // 8. MISSIONS
     this.missionManager.update(dt, this.player, this.wantedSystem, this.roadNetwork);
 
-    // If custom waypoint is set, route GPS to waypoint
+    // GPS Routing
     const waypoint = useGameStore.getState().activeWaypoint;
     if (waypoint && !this.missionManager.activeMission) {
       const path = this.roadNetwork.findPath(
@@ -203,11 +350,21 @@ export class GameEngine {
       );
       this.roadNetwork.updateGPSRibbon(path);
     }
+
+    // 9. RAPIER PHYSICS STEP
+    this.physicsWorld?.step();
   }
 
   private syncStore(renderInfo: { drawCalls: number; triangles: number }): void {
     const curWeapon = this.player.getActiveWeapon();
     const district = CANONICAL_DISTRICTS.find(d => d.id === this.streamer.currentDistrictId);
+
+    const pos = this.player.currentVehicle
+      ? this.player.currentVehicle.position
+      : this.player.position;
+    const heading = this.player.currentVehicle
+      ? this.player.currentVehicle.rotationY
+      : this.player.facingAngle;
 
     useGameStore.getState().updateStats({
       health: Math.round(this.player.stats.health),
@@ -233,11 +390,41 @@ export class GameEngine {
       triangles: renderInfo.triangles,
       activeCellsCount: this.streamer.getActiveSectorIds().length
     });
+
+    const snapshot: TelemetryData = {
+      playerCoords: [pos.x, pos.y, pos.z],
+      playerHeading: heading,
+      activeVehicle: this.player.currentVehicle
+        ? {
+            id: this.player.currentVehicle.id,
+            name: this.player.currentVehicle.def.name,
+            speed: this.player.currentVehicle.speed,
+            health: this.player.currentVehicle.health
+          }
+        : null,
+      fps: this.currentFps,
+      drawCalls: renderInfo.drawCalls,
+      triangles: renderInfo.triangles,
+      activeCellCount: this.streamer.getActiveSectorIds().length
+    };
+    this.emitSnapshot(snapshot);
   }
 
   public dispose(): void {
     this.stop();
     inputManager.detach();
+    this.player.dispose();
+    this.vehicleManager.dispose();
+    this.npcManager.dispose();
+    this.combatSystem.dispose();
+    this.wantedSystem.dispose();
+    this.missionManager.dispose();
+    this.roadNetwork.dispose();
+    this.streamer.dispose();
+    this.colliderManager?.clear();
+    this.physicsWorld?.dispose();
+    this.navMeshService?.dispose();
+    soundEngine.dispose();
     this.sceneManager.dispose();
   }
 }
