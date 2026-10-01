@@ -2,9 +2,25 @@ import * as THREE from 'three';
 import { VehicleDefinition } from '../core/types';
 import { materialLib } from '../rendering/materials';
 
+function addCarPart(
+  root: THREE.Object3D,
+  geometry: THREE.BufferGeometry,
+  material: THREE.Material,
+  position: [number, number, number],
+  name: string
+): THREE.Mesh {
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.name = name;
+  mesh.position.set(position[0], position[1], position[2]);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  root.add(mesh);
+  return mesh;
+}
+
 export class VehicleFactory {
   /**
-   * Builds the procedural 3D model for any canonical vehicle definition
+   * Builds the procedural 3D model for any canonical vehicle definition (Pages 56-64, 103)
    */
   public static createVehicleModel(def: VehicleDefinition): {
     group: THREE.Group;
@@ -20,226 +36,299 @@ export class VehicleFactory {
     let rotor: THREE.Group | undefined;
     let sirenLights: THREE.Mesh[] | undefined;
 
-    // Body Paint Material
+    // Body Paint Material (Isolated per vehicle instance)
     const paintMat = new THREE.MeshStandardMaterial({
       color: new THREE.Color(def.color),
-      roughness: 0.35,
+      roughness: 0.28,
       metalness: 0.75
     });
+    group.userData.ownedMaterial = paintMat;
 
+    const width = def.dimensions.width;
+    const height = def.dimensions.height;
+    const length = def.dimensions.length;
+
+    // 1. TANK (AR-7 Mastiff) - Page 64
     if (def.class === 'tank') {
-      // 1. Light Tank (AR-7 Mastiff)
-      const hullGeo = new THREE.BoxGeometry(def.dimensions.width, 1.4, def.dimensions.length);
-      const hullMesh = new THREE.Mesh(hullGeo, paintMat);
-      hullMesh.position.y = 1.0;
-      hullMesh.castShadow = true;
-      group.add(hullMesh);
+      const hullGeo = new THREE.BoxGeometry(width, 1.3, length);
+      addCarPart(group, hullGeo, paintMat, [0, 1.0, 0], 'hull');
 
-      // Dual continuous track assemblies
-      const trackGeo = new THREE.BoxGeometry(0.65, 0.8, def.dimensions.length + 0.4);
-      const leftTrack = new THREE.Mesh(trackGeo, materialLib.vehicleTire);
-      leftTrack.position.set(-def.dimensions.width / 2, 0.5, 0);
-      group.add(leftTrack);
+      // Sloped front glacis
+      const glacisGeo = new THREE.BoxGeometry(width * 0.95, 0.4, 1.5);
+      glacisGeo.rotateX(Math.PI / 6);
+      addCarPart(group, glacisGeo, paintMat, [0, 1.3, length * 0.42], 'glacis');
 
-      const rightTrack = new THREE.Mesh(trackGeo, materialLib.vehicleTire);
-      rightTrack.position.set(def.dimensions.width / 2, 0.5, 0);
-      group.add(rightTrack);
+      // Track assemblies
+      const trackGeo = new THREE.BoxGeometry(0.7, 0.85, length + 0.4);
+      addCarPart(group, trackGeo, materialLib.vehicleTire, [-width / 2, 0.55, 0], 'leftTrack');
+      addCarPart(group, trackGeo, materialLib.vehicleTire, [width / 2, 0.55, 0], 'rightTrack');
 
-      // Rotating Turret
+      // Turret
       turret = new THREE.Group();
-      turret.position.set(0, 1.7, -0.2);
+      turret.position.set(0, 1.8, -0.2);
 
-      const turretBody = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.9, 2.5), paintMat);
+      const turretBody = new THREE.Mesh(new THREE.BoxGeometry(2.3, 0.85, 2.6), paintMat);
       turretBody.castShadow = true;
       turret.add(turretBody);
 
-      // Long cannon barrel
-      const cannonGeo = new THREE.CylinderGeometry(0.16, 0.2, 4.2, 12);
+      // Commander hatch
+      const hatch = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.4, 0.15, 12), materialLib.galvanizedSteelMaterial);
+      hatch.position.set(0.5, 0.5, -0.3);
+      turret.add(hatch);
+
+      // Elevating cannon barrel
+      const cannonGeo = new THREE.CylinderGeometry(0.14, 0.18, 4.4, 12);
       cannonGeo.rotateX(Math.PI / 2);
       const cannonMesh = new THREE.Mesh(cannonGeo, materialLib.vehicleChrome);
-      cannonMesh.position.set(0, 0.1, 2.8);
+      cannonMesh.position.set(0, 0.1, 2.6);
       cannonMesh.castShadow = true;
       turret.add(cannonMesh);
 
+      // Muzzle brake
+      const muzzleBrake = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.35, 0.5), materialLib.galvanizedSteelMaterial);
+      muzzleBrake.position.set(0, 0.1, 4.8);
+      turret.add(muzzleBrake);
+
       group.add(turret);
-    } else if (def.class === 'helicopter') {
-      // 2. Helicopter (HX-4 Sparrow)
-      const podGeo = new THREE.BoxGeometry(def.dimensions.width, def.dimensions.height * 0.7, def.dimensions.length * 0.55);
-      const podMesh = new THREE.Mesh(podGeo, paintMat);
-      podMesh.position.y = 1.8;
-      podMesh.castShadow = true;
-      group.add(podMesh);
+      return { group, wheels, turret, rotor, sirenLights };
+    }
 
-      // Cockpit windshield
-      const glassMesh = new THREE.Mesh(new THREE.BoxGeometry(def.dimensions.width * 0.9, 1.4, 1.8), materialLib.vehicleGlass);
-      glassMesh.position.set(0, 2.0, 1.5);
-      group.add(glassMesh);
+    // 2. HELICOPTER (Vespera Swift) - Page 63
+    if (def.isAircraft) {
+      // Streamlined Fuselage
+      const podGeo = new THREE.BoxGeometry(width * 0.9, height * 0.65, length * 0.55);
+      addCarPart(group, podGeo, paintMat, [0, 1.8, 0.3], 'fuselage');
 
-      // Landing skids
-      const skidGeo = new THREE.BoxGeometry(0.12, 0.12, def.dimensions.length * 0.55);
-      const leftSkid = new THREE.Mesh(skidGeo, materialLib.vehicleChrome);
-      leftSkid.position.set(-1.1, 0.25, 0);
-      group.add(leftSkid);
-
-      const rightSkid = new THREE.Mesh(skidGeo, materialLib.vehicleChrome);
-      rightSkid.position.set(1.1, 0.25, 0);
-      group.add(rightSkid);
+      // Cockpit bubble glazing
+      const glassGeo = new THREE.BoxGeometry(width * 0.85, 1.3, 1.8);
+      addCarPart(group, glassGeo, materialLib.vehicleGlass, [0, 2.0, 1.4], 'cockpitGlass');
 
       // Tail boom
-      const boomGeo = new THREE.CylinderGeometry(0.18, 0.35, def.dimensions.length * 0.5, 8);
-      boomGeo.rotateX(Math.PI / 2);
-      const boomMesh = new THREE.Mesh(boomGeo, paintMat);
-      boomMesh.position.set(0, 1.9, -def.dimensions.length * 0.38);
-      group.add(boomMesh);
+      const boomGeo = new THREE.BoxGeometry(0.4, 0.5, length * 0.6);
+      addCarPart(group, boomGeo, paintMat, [0, 2.1, -length * 0.38], 'tailBoom');
+
+      // Tail vertical stabilizer & tail rotor
+      const finGeo = new THREE.BoxGeometry(0.12, 1.6, 0.9);
+      addCarPart(group, finGeo, paintMat, [0, 2.6, -length * 0.68], 'verticalFin');
+
+      // Landing skids
+      for (const side of [-1, 1]) {
+        const skidGeo = new THREE.BoxGeometry(0.1, 0.1, length * 0.65);
+        addCarPart(group, skidGeo, materialLib.vehicleChrome, [side * width * 0.45, 0.35, 0], `skid_${side}`);
+
+        const strutF = new THREE.BoxGeometry(0.08, 1.2, 0.08);
+        addCarPart(group, strutF, materialLib.vehicleChrome, [side * width * 0.35, 0.95, 0.8], `strutF_${side}`);
+        const strutR = new THREE.BoxGeometry(0.08, 1.2, 0.08);
+        addCarPart(group, strutR, materialLib.vehicleChrome, [side * width * 0.35, 0.95, -0.8], `strutR_${side}`);
+      }
 
       // Main spinning rotor assembly
       rotor = new THREE.Group();
-      rotor.position.set(0, 3.2, 0);
+      rotor.position.set(0, 3.2, 0.2);
 
-      const bladeGeo = new THREE.BoxGeometry(8.5, 0.06, 0.35);
+      const mastGeo = new THREE.CylinderGeometry(0.15, 0.15, 0.6, 8);
+      rotor.add(new THREE.Mesh(mastGeo, materialLib.vehicleChrome));
+
+      const bladeGeo = new THREE.BoxGeometry(8.8, 0.05, 0.32);
       const blade1 = new THREE.Mesh(bladeGeo, materialLib.vehicleChrome);
-      rotor.add(blade1);
       const blade2 = new THREE.Mesh(bladeGeo, materialLib.vehicleChrome);
       blade2.rotation.y = Math.PI / 2;
-      rotor.add(blade2);
+      rotor.add(blade1, blade2);
 
       group.add(rotor);
-    } else if (def.class === 'boat') {
-      // 3. Speedboat (TideRunner 24)
-      const hullGeo = new THREE.BoxGeometry(def.dimensions.width, 1.1, def.dimensions.length);
-      const hullMesh = new THREE.Mesh(hullGeo, paintMat);
-      hullMesh.position.y = 0.55;
-      hullMesh.castShadow = true;
-      group.add(hullMesh);
+      return { group, wheels, turret, rotor, sirenLights };
+    }
 
-      // Angled windshield
-      const glass = new THREE.Mesh(new THREE.BoxGeometry(def.dimensions.width * 0.85, 0.7, 1.4), materialLib.vehicleGlass);
-      glass.position.set(0, 1.35, 0.8);
-      group.add(glass);
+    // 3. BOAT (Nereid Cruiser) - Page 62
+    if (def.class === 'boat' || def.isBoat) {
+      // Deep-V Hull
+      const hullGeo = new THREE.BoxGeometry(width, 1.1, length);
+      addCarPart(group, hullGeo, paintMat, [0, 0.6, 0], 'hull');
 
-      // Dual outboard motors
-      const motor1 = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.9, 0.6), materialLib.vehicleChrome);
-      motor1.position.set(-0.6, 0.6, -def.dimensions.length / 2 - 0.2);
-      group.add(motor1);
+      // Bow flare wedge
+      const bowGeo = new THREE.ConeGeometry(width * 0.6, 2.2, 4);
+      bowGeo.rotateX(Math.PI / 2);
+      bowGeo.rotateY(Math.PI / 4);
+      addCarPart(group, bowGeo, paintMat, [0, 0.65, length * 0.55], 'bowFlare');
 
-      const motor2 = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.9, 0.6), materialLib.vehicleChrome);
-      motor2.position.set(0.6, 0.6, -def.dimensions.length / 2 - 0.2);
-      group.add(motor2);
-    } else if (def.class === 'motorbike') {
-      // 4. Motorbike (Kite 600)
-      const frameGeo = new THREE.BoxGeometry(0.5, 0.8, 1.6);
-      const frameMesh = new THREE.Mesh(frameGeo, paintMat);
-      frameMesh.position.y = 0.7;
-      frameMesh.castShadow = true;
-      group.add(frameMesh);
+      // Deck & cockpit well
+      const deckGeo = new THREE.BoxGeometry(width * 0.88, 0.3, length * 0.8);
+      addCarPart(group, deckGeo, materialLib.luxuryMarbleMaterial, [0, 1.15, -0.2], 'deck');
 
-      // Handlebars
+      // Windshield
+      const glass = addCarPart(group, new THREE.BoxGeometry(width * 0.82, 0.65, 1.4), materialLib.vehicleGlass, [0, 1.55, 0.5], 'windshield');
+      void glass;
+
+      // Twin outboard motors
+      const motor1 = addCarPart(group, new THREE.BoxGeometry(0.4, 0.9, 0.6), materialLib.vehicleChrome, [-0.65, 0.6, -length / 2 - 0.2], 'motorLeft');
+      const motor2 = addCarPart(group, new THREE.BoxGeometry(0.4, 0.9, 0.6), materialLib.vehicleChrome, [0.65, 0.6, -length / 2 - 0.2], 'motorRight');
+      void motor1; void motor2;
+
+      return { group, wheels, turret, rotor, sirenLights };
+    }
+
+    // 4. MOTORBIKE (Kaze 750) - Page 61
+    if (def.class === 'motorbike') {
+      const frameGeo = new THREE.BoxGeometry(0.35, 0.65, 1.6);
+      addCarPart(group, frameGeo, paintMat, [0, 0.75, 0], 'frame');
+
+      // Engine block
+      const engineGeo = new THREE.BoxGeometry(0.4, 0.45, 0.6);
+      addCarPart(group, engineGeo, materialLib.vehicleChrome, [0, 0.5, -0.1], 'engine');
+
+      // Fuel tank
+      const tankGeo = new THREE.CapsuleGeometry(0.22, 0.5, 4, 8);
+      tankGeo.rotateX(Math.PI / 2);
+      addCarPart(group, tankGeo, paintMat, [0, 1.05, 0.2], 'fuelTank');
+
+      // Seat
+      const seatGeo = new THREE.BoxGeometry(0.3, 0.12, 0.7);
+      addCarPart(group, seatGeo, materialLib.vehicleInteriorDark, [0, 0.95, -0.4], 'seat');
+
+      // Handlebar
       const barGeo = new THREE.CylinderGeometry(0.04, 0.04, 0.9, 8);
       barGeo.rotateZ(Math.PI / 2);
-      const barMesh = new THREE.Mesh(barGeo, materialLib.vehicleChrome);
-      barMesh.position.set(0, 1.1, 0.5);
-      group.add(barMesh);
+      addCarPart(group, barGeo, materialLib.vehicleChrome, [0, 1.25, 0.55], 'handlebar');
 
-      // Front & Rear Wheels
-      const wheelGeo = new THREE.CylinderGeometry(0.35, 0.35, 0.18, 16);
+      // Headlight
+      addCarPart(group, new THREE.BoxGeometry(0.2, 0.2, 0.1), materialLib.vehicleHeadlight, [0, 1.15, 0.9], 'headlight');
+
+      // Dual wheels
+      const wheelGeo = new THREE.CylinderGeometry(0.38, 0.38, 0.18, 16);
       wheelGeo.rotateZ(Math.PI / 2);
 
       const frontW = new THREE.Mesh(wheelGeo, materialLib.vehicleTire);
-      frontW.position.set(0, 0.35, 0.9);
-      wheels.push(frontW);
+      frontW.position.set(0, 0.38, 0.9);
+      frontW.castShadow = true;
       group.add(frontW);
+      wheels.push(frontW);
 
       const rearW = new THREE.Mesh(wheelGeo, materialLib.vehicleTire);
-      rearW.position.set(0, 0.35, -0.9);
-      wheels.push(rearW);
+      rearW.position.set(0, 0.38, -0.9);
+      rearW.castShadow = true;
       group.add(rearW);
-    } else {
-      // 5. Standard 4-Wheeled Vehicles (Sports Coupe, Sedan, Pickup, Van, Compact, Police)
-      const { width, height, length } = def.dimensions;
+      wheels.push(rearW);
 
-      // Chassis Body
-      const bodyGeo = new THREE.BoxGeometry(width, height * 0.55, length);
-      const bodyMesh = new THREE.Mesh(bodyGeo, paintMat);
-      bodyMesh.position.y = height * 0.45;
-      bodyMesh.castShadow = true;
-      group.add(bodyMesh);
+      return { group, wheels, turret, rotor, sirenLights };
+    }
 
-      // Cabin / Greenhouse Glass Roof
-      const cabinLength = length * (def.class === 'pickup' ? 0.4 : def.class === 'van' ? 0.85 : 0.55);
-      const cabinGeo = new THREE.BoxGeometry(width * 0.85, height * 0.45, cabinLength);
-      const cabinMesh = new THREE.Mesh(cabinGeo, materialLib.vehicleGlass);
-      const cabinZOffset = def.class === 'pickup' ? 0.4 : def.class === 'van' ? -0.2 : -0.15;
-      cabinMesh.position.set(0, height * 0.85, cabinZOffset);
-      cabinMesh.castShadow = true;
-      group.add(cabinMesh);
+    // 5. CARS: SPORTS COUPE, SEDAN, SUV, TRUCK, VAN (Pages 57-60, 103)
+    const isCoupe = def.class === 'sports_coupe';
+    const isTruck = def.class === 'pickup';
+    const isVan = def.class === 'van';
 
-      // Headlights & Taillights
-      const hlGeo = new THREE.BoxGeometry(0.35, 0.15, 0.08);
-      const hlLeft = new THREE.Mesh(hlGeo, materialLib.vehicleHeadlight);
-      hlLeft.position.set(-width / 2 + 0.3, height * 0.45, length / 2 + 0.02);
-      group.add(hlLeft);
+    // A. Chassis & Lower Body Shell
+    const chassisGeo = new THREE.BoxGeometry(width, height * 0.45, length);
+    addCarPart(group, chassisGeo, paintMat, [0, height * 0.42, 0], 'chassis');
 
-      const hlRight = new THREE.Mesh(hlGeo, materialLib.vehicleHeadlight);
-      hlRight.position.set(width / 2 - 0.3, height * 0.45, length / 2 + 0.02);
-      group.add(hlRight);
+    // B. Aerodynamic Upper Body / Cabin Shell
+    const cabinH = height * (isVan ? 0.65 : 0.48);
+    const cabinL = length * (isVan ? 0.75 : isCoupe ? 0.48 : isTruck ? 0.42 : 0.58);
+    const cabinZ = isTruck ? length * 0.15 : isCoupe ? -length * 0.06 : -length * 0.02;
 
-      const tlLeft = new THREE.Mesh(hlGeo, materialLib.vehicleTaillight);
-      tlLeft.position.set(-width / 2 + 0.3, height * 0.45, -length / 2 - 0.02);
-      group.add(tlLeft);
+    const cabinGeo = new THREE.BoxGeometry(width * 0.88, cabinH, cabinL);
+    addCarPart(group, cabinGeo, paintMat, [0, height * 0.42 + cabinH / 2, cabinZ], 'bodyUpper');
 
-      const tlRight = new THREE.Mesh(hlGeo, materialLib.vehicleTaillight);
-      tlRight.position.set(width / 2 - 0.3, height * 0.45, -length / 2 - 0.02);
-      group.add(tlRight);
+    // C. Cabin Windshield & Side Glazing
+    const glassGeo = new THREE.BoxGeometry(width * 0.82, cabinH * 0.75, cabinL * 0.85);
+    addCarPart(group, glassGeo, materialLib.vehicleGlass, [0, height * 0.45 + cabinH / 2, cabinZ], 'cabinGlass');
 
-      // Police Strobe Lightbar
-      if (def.class === 'police') {
-        sirenLights = [];
-        const lightbarGeo = new THREE.BoxGeometry(width * 0.65, 0.14, 0.28);
-        const barBase = new THREE.Mesh(lightbarGeo, materialLib.vehicleChrome);
-        barBase.position.set(0, height * 1.12, 0);
-        group.add(barBase);
+    // D. Truck Cargo Bed (Page 59)
+    if (isTruck) {
+      const bedGeo = new THREE.BoxGeometry(width * 0.92, height * 0.35, length * 0.45);
+      addCarPart(group, bedGeo, materialLib.galvanizedSteelMaterial, [0, height * 0.45, -length * 0.28], 'cargoBed');
+    }
 
-        const sirenR = new THREE.Mesh(new THREE.BoxGeometry(width * 0.25, 0.12, 0.24), materialLib.vehicleSirenRed);
-        sirenR.position.set(-width * 0.18, height * 1.13, 0);
-        group.add(sirenR);
-        sirenLights.push(sirenR);
+    // E. Headlights, Taillights & Grille Trim (Page 57, 58)
+    for (const side of [-1, 1]) {
+      addCarPart(
+        group,
+        new THREE.BoxGeometry(0.32, 0.12, 0.1),
+        materialLib.vehicleHeadlight,
+        [side * width * 0.36, height * 0.42, length * 0.49],
+        `headlight_${side}`
+      );
+      addCarPart(
+        group,
+        new THREE.BoxGeometry(0.32, 0.12, 0.1),
+        materialLib.vehicleTaillight,
+        [side * width * 0.36, height * 0.44, -length * 0.49],
+        `taillight_${side}`
+      );
+      // Door seam chrome detail
+      addCarPart(
+        group,
+        new THREE.BoxGeometry(0.02, height * 0.55, length * 0.38),
+        materialLib.vehicleChrome,
+        [side * width * 0.48, height * 0.48, 0],
+        `doorSeam_${side}`
+      );
+    }
 
-        const sirenB = new THREE.Mesh(new THREE.BoxGeometry(width * 0.25, 0.12, 0.24), materialLib.vehicleSirenBlue);
-        sirenB.position.set(width * 0.18, height * 1.13, 0);
-        group.add(sirenB);
-        sirenLights.push(sirenB);
+    // Front intake grille
+    const grilleGeo = new THREE.BoxGeometry(width * 0.45, 0.2, 0.08);
+    addCarPart(group, grilleGeo, materialLib.vehicleInteriorDark, [0, height * 0.32, length * 0.5], 'grille');
+
+    // Dual exhaust tips on sports cars
+    if (isCoupe) {
+      for (const side of [-1, 1]) {
+        const exhaust = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.25, 8), materialLib.vehicleChrome);
+        exhaust.rotation.x = Math.PI / 2;
+        exhaust.position.set(side * 0.45, height * 0.22, -length * 0.51);
+        group.add(exhaust);
       }
+    }
 
-      // 4 Wheels
-      const wheelRadius = height * 0.26;
-      const wheelWidth = 0.28;
-      const wheelGeo = new THREE.CylinderGeometry(wheelRadius, wheelRadius, wheelWidth, 16);
-      wheelGeo.rotateZ(Math.PI / 2);
+    // Police Cruiser Lightbar
+    if (def.class === 'police') {
+      const barGeo = new THREE.BoxGeometry(width * 0.65, 0.12, 0.25);
+      addCarPart(group, barGeo, materialLib.vehicleChrome, [0, height + 0.08, cabinZ], 'lightbar');
 
-      const xOff = width / 2 - 0.08;
-      const zOffFront = length * 0.3;
-      const zOffRear = -length * 0.3;
+      const sirenR = new THREE.Mesh(new THREE.BoxGeometry(width * 0.25, 0.12, 0.22), materialLib.vehicleSirenRed);
+      sirenR.position.set(-width * 0.18, height + 0.08, cabinZ);
+      group.add(sirenR);
 
-      // Front-Left, Front-Right, Rear-Left, Rear-Right
-      const fl = new THREE.Mesh(wheelGeo, materialLib.vehicleTire);
-      fl.position.set(-xOff, wheelRadius, zOffFront);
-      wheels.push(fl);
-      group.add(fl);
+      const sirenB = new THREE.Mesh(new THREE.BoxGeometry(width * 0.25, 0.12, 0.22), materialLib.vehicleSirenBlue);
+      sirenB.position.set(width * 0.18, height + 0.08, cabinZ);
+      group.add(sirenB);
 
-      const fr = new THREE.Mesh(wheelGeo, materialLib.vehicleTire);
-      fr.position.set(xOff, wheelRadius, zOffFront);
-      wheels.push(fr);
-      group.add(fr);
+      sirenLights = [sirenR, sirenB];
+    }
 
-      const rl = new THREE.Mesh(wheelGeo, materialLib.vehicleTire);
-      rl.position.set(-xOff, wheelRadius, zOffRear);
-      wheels.push(rl);
-      group.add(rl);
+    // F. Wheels, Suspension Pivots, Tires and Alloy Rims (Page 67-68, 103)
+    const wheelRadius = height * 0.25;
+    const wheelWidth = 0.26;
+    const xOff = width * 0.48;
+    const zOffFront = length * 0.32;
+    const zOffRear = -length * 0.32;
 
-      const rr = new THREE.Mesh(wheelGeo, materialLib.vehicleTire);
-      rr.position.set(xOff, wheelRadius, zOffRear);
-      wheels.push(rr);
-      group.add(rr);
+    const wheelPositions: [number, number][] = [
+      [-xOff, zOffFront], // FL
+      [xOff, zOffFront],  // FR
+      [-xOff, zOffRear],  // RL
+      [xOff, zOffRear]   // RR
+    ];
+
+    for (let i = 0; i < wheelPositions.length; i++) {
+      const [wx, wz] = wheelPositions[i];
+      const pivot = new THREE.Group();
+      pivot.name = `wheel_pivot_${i}`;
+      pivot.position.set(wx, wheelRadius * 0.95, wz);
+
+      const tireGeo = new THREE.CylinderGeometry(wheelRadius, wheelRadius, wheelWidth, 18);
+      tireGeo.rotateZ(Math.PI / 2);
+      const tire = new THREE.Mesh(tireGeo, materialLib.vehicleTire);
+      tire.castShadow = true;
+      pivot.add(tire);
+
+      // Alloy Rim
+      const rimGeo = new THREE.CylinderGeometry(wheelRadius * 0.52, wheelRadius * 0.52, wheelWidth + 0.01, 16);
+      rimGeo.rotateZ(Math.PI / 2);
+      const rim = new THREE.Mesh(rimGeo, materialLib.vehicleChrome);
+      pivot.add(rim);
+
+      group.add(pivot);
+      wheels.push(tire);
     }
 
     return { group, wheels, turret, rotor, sirenLights };
