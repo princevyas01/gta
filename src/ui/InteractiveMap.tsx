@@ -25,14 +25,17 @@ export const InteractiveMap: React.FC<{ playerPos: [number, number, number] }> =
 
   const playerMapPercent = worldToMapPercent(playerPos[0], playerPos[2]);
 
-  const handleMouseDown = (e: React.MouseEvent) => {
+  const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button === 0) {
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId);
+      } catch {}
       setIsDragging(true);
       setDragStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
     }
   };
 
-  const handleMouseMove = (e: React.MouseEvent) => {
+  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     if (isDragging) {
       setPan({
         x: e.clientX - dragStart.x,
@@ -41,7 +44,12 @@ export const InteractiveMap: React.FC<{ playerPos: [number, number, number] }> =
     }
   };
 
-  const handleMouseUp = () => {
+  const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    try {
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+    } catch {}
     setIsDragging(false);
   };
 
@@ -55,17 +63,17 @@ export const InteractiveMap: React.FC<{ playerPos: [number, number, number] }> =
     e.preventDefault();
     if (!containerRef.current) return;
     const rect = containerRef.current.getBoundingClientRect();
-    const clickX = e.clientX - rect.left - pan.x;
-    const clickY = e.clientY - rect.top - pan.y;
+    const localX = e.clientX - rect.left;
+    const localY = e.clientY - rect.top;
 
-    const mapWidth = 900 * zoom;
-    const mapHeight = 900 * zoom;
+    // The map is a 900x900 world projection transformed by pan + zoom.
+    const unscaledX = (localX - rect.width * 0.5 - pan.x) / zoom + 450;
+    const unscaledY = (localY - rect.height * 0.5 - pan.y) / zoom + 450;
 
-    const percentX = (clickX / mapWidth) * 100;
-    const percentY = (clickY / mapHeight) * 100;
+    const percentX = Math.max(0, Math.min(100, (unscaledX / 900) * 100));
+    const percentY = Math.max(0, Math.min(100, (unscaledY / 900) * 100));
 
-    const worldCoord = mapPercentToWorld(percentX, percentY);
-    setWaypoint(worldCoord);
+    setWaypoint(mapPercentToWorld(percentX, percentY));
     soundEngine.playUIClick();
   };
 
@@ -178,9 +186,10 @@ export const InteractiveMap: React.FC<{ playerPos: [number, number, number] }> =
       {/* Main Map Canvas Area */}
       <div
         ref={containerRef}
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
         onWheel={handleWheel}
         onContextMenu={handleMapRightClick}
         style={{
