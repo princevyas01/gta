@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { NPCModel, NPCArchetype } from './npcModel';
 import { distance2D } from '../core/math';
 import { eventBus } from '../core/events';
+import { HitDirection } from '../combat/hitReactionTypes';
 
 export interface NPCInstance {
   id: string;
@@ -12,7 +13,7 @@ export interface NPCInstance {
   state: 'idle' | 'walk' | 'flee' | 'combat' | 'dead';
   health: number;
   isDead: boolean;
-  takeDamage: (dmg: number) => void;
+  takeDamage: (dmg: number, hitDirection?: HitDirection) => void;
 }
 
 export class NPCManager {
@@ -20,6 +21,7 @@ export class NPCManager {
   public npcs: NPCInstance[] = [];
   private animTimer = 0;
   private readonly fleeDirScratch = new THREE.Vector3();
+  private frameCount = 0;
 
   constructor(scene: THREE.Scene) {
     this.scene = scene;
@@ -27,15 +29,24 @@ export class NPCManager {
   }
 
   private spawnVerticalSlicePopulation(): void {
-    const archetypes: NPCArchetype[] = ['office_worker', 'tourist', 'police_officer'];
+    const archetypes: NPCArchetype[] = [
+      'office_worker',
+      'student',
+      'tourist',
+      'dock_worker',
+      'service_worker',
+      'street_vendor',
+      'athlete',
+      'police_officer'
+    ];
 
-    // Spawn 18 pedestrians scattered along sidewalks in Meridian Core and Aurelio Central
-    for (let i = 0; i < 18; i++) {
+    // Spawn 24 pedestrians scattered along sidewalks in central sectors
+    for (let i = 0; i < 24; i++) {
       const arch = archetypes[i % archetypes.length];
       const model = new NPCModel(arch);
       this.scene.add(model.mesh);
 
-      const angle = (i / 18) * Math.PI * 2;
+      const angle = (i / 24) * Math.PI * 2;
       const radius = 25 + Math.random() * 45;
       const pos = new THREE.Vector3(
         Math.cos(angle) * radius + (Math.random() - 0.5) * 20,
@@ -53,9 +64,10 @@ export class NPCManager {
         state: 'walk',
         health: 100,
         isDead: false,
-        takeDamage: (dmg: number) => {
+        takeDamage: (dmg: number, hitDirection: HitDirection = 'front') => {
           if (npc.isDead) return;
           npc.health -= dmg;
+          npc.model.triggerHitReaction(hitDirection);
           if (npc.health <= 0) {
             npc.isDead = true;
             npc.state = 'dead';
@@ -72,8 +84,10 @@ export class NPCManager {
 
   public update(dt: number, playerPos: THREE.Vector3, isGunfireNear: boolean): void {
     this.animTimer += dt;
+    this.frameCount++;
 
-    for (const npc of this.npcs) {
+    for (let i = 0; i < this.npcs.length; i++) {
+      const npc = this.npcs[i];
       if (npc.isDead) {
         npc.model.animate(0, this.animTimer, true);
         continue;
@@ -81,8 +95,13 @@ export class NPCManager {
 
       const distToPlayer = distance2D(npc.position.x, npc.position.z, playerPos.x, playerPos.z);
 
+      // Distance LOD tick throttling (Page 107)
+      if (distToPlayer > 120 && (this.frameCount + i) % 3 !== 0) {
+        continue;
+      }
+
       // React to gunfire or close danger by fleeing
-      if (isGunfireNear && distToPlayer < 40 && npc.state !== 'flee') {
+      if (isGunfireNear && distToPlayer < 45 && npc.state !== 'flee') {
         npc.state = 'flee';
         eventBus.emit('WITNESS_EVENT', {
           position: [npc.position.x, npc.position.y, npc.position.z],
@@ -113,7 +132,7 @@ export class NPCManager {
         npc.model.mesh.rotation.y = Math.atan2(npc.velocity.x, npc.velocity.z);
       }
 
-      const speed = npc.velocity.length();
+      const speed = Math.hypot(npc.velocity.x, npc.velocity.z);
       npc.model.animate(speed, this.animTimer, false);
     }
   }
@@ -121,12 +140,7 @@ export class NPCManager {
   public dispose(): void {
     for (const npc of this.npcs) {
       this.scene.remove(npc.model.mesh);
-      npc.model.mesh.traverse(obj => {
-        const mesh = obj as THREE.Mesh;
-        if (mesh.isMesh) {
-          mesh.geometry?.dispose();
-        }
-      });
+      npc.model.dispose();
     }
     this.npcs.length = 0;
   }
