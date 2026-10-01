@@ -7,12 +7,15 @@ import { ParticleSystem } from '../rendering/particles';
 import { StaticCollider } from '../world/sectorBuilder';
 
 export class VehicleInstance {
+  public id: string;
   public def: VehicleDefinition;
   public mesh: THREE.Group;
   public wheels: THREE.Mesh[] = [];
   public turret?: THREE.Group;
   public rotor?: THREE.Group;
   public sirenLights?: THREE.Mesh[];
+  public owned: boolean = false;
+  public spawnKind: 'owned' | 'ambient' | 'police' | 'mission' = 'ambient';
 
   public position: THREE.Vector3 = new THREE.Vector3();
   public velocity: THREE.Vector3 = new THREE.Vector3();
@@ -53,14 +56,19 @@ export class VehicleInstance {
       sirenLights?: THREE.Mesh[];
     },
     spawnPos: THREE.Vector3,
-    spawnRotY: number = 0
+    spawnRotY: number = 0,
+    id: string = `vehinst_${Math.random().toString(36).substring(2, 9)}`,
+    options?: { owned?: boolean; spawnKind?: 'owned' | 'ambient' | 'police' | 'mission' }
   ) {
+    this.id = id;
     this.def = def;
     this.mesh = modelData.group;
     this.wheels = modelData.wheels;
     this.turret = modelData.turret;
     this.rotor = modelData.rotor;
     this.sirenLights = modelData.sirenLights;
+    this.owned = options?.owned ?? false;
+    this.spawnKind = options?.spawnKind ?? 'ambient';
 
     this.position.copy(spawnPos);
     this.rotationY = spawnRotY;
@@ -95,13 +103,20 @@ export class VehicleInstance {
       const mesh = object as THREE.Mesh;
       if (!mesh.isMesh) return;
       mesh.geometry?.dispose();
-      const material = mesh.material;
-      if (Array.isArray(material)) {
-        for (const entry of material) entry.dispose();
-      } else {
-        material?.dispose();
+      // DO NOT dispose materialLib shared materials here!
+      const owned = (mesh.userData as { ownedMaterial?: THREE.Material })?.ownedMaterial;
+      if (owned instanceof THREE.Material) owned.dispose();
+      const ownedList = (mesh.userData as { ownedMaterials?: THREE.Material[] })?.ownedMaterials;
+      if (Array.isArray(ownedList)) {
+        for (const m of ownedList) {
+          if (m instanceof THREE.Material) m.dispose();
+        }
       }
     });
+
+    const rootOwned = (this.mesh.userData as { ownedMaterial?: THREE.Material })?.ownedMaterial;
+    if (rootOwned instanceof THREE.Material) rootOwned.dispose();
+
     this.mesh.removeFromParent();
   }
 
@@ -245,12 +260,21 @@ export class VehicleInstance {
 
     this.position.copy(this.nextPosScratch);
 
-    // Wheel rotation animation
-    const wheelRotDelta = (this.speed / (this.def.dimensions.height * 0.26)) * dt;
+    // Suspension pitch & roll from weight transfer (Pages 66-67)
+    const accelRate = throttle > 0 ? 0.05 : throttle < 0 ? -0.06 : 0;
+    const targetPitch = clamp(-accelRate * (this.speed / (this.def.topSpeed || 1)), -0.08, 0.08);
+    const targetRoll = clamp(-this.steerAngle * (this.speed / 15.0), -0.09, 0.09);
+    this.mesh.rotation.x = lerp(this.mesh.rotation.x, targetPitch, dt * 10);
+    this.mesh.rotation.z = lerp(this.mesh.rotation.z, targetRoll, dt * 10);
+
+    // Wheel rotation and steering pivot animation
+    const wheelRotDelta = (this.speed / (this.def.dimensions.height * 0.25 || 1)) * dt;
     this.wheels.forEach((w, idx) => {
       w.rotation.x += wheelRotDelta;
-      if (idx < 2) {
-        // Front wheels turn
+      if (idx < 2 && w.parent && w.parent !== this.mesh) {
+        // Front wheels turn steering pivot
+        w.parent.rotation.y = this.steerAngle;
+      } else if (idx < 2) {
         w.rotation.y = this.steerAngle;
       }
     });
