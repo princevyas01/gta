@@ -6,9 +6,12 @@ class SoundEngine {
   private engineOsc: OscillatorNode | null = null;
   private sirenGain: GainNode | null = null;
   private sirenOsc: OscillatorNode | null = null;
+  private sirenLfo: OscillatorNode | null = null;
+  private sirenLfoGain: GainNode | null = null;
   private ambientGain: GainNode | null = null;
   private isEngineRunning: boolean = false;
   private isSirenActive: boolean = false;
+  private noiseBuffer: AudioBuffer | null = null;
 
   public init(): void {
     if (this.ctx) return;
@@ -20,9 +23,25 @@ class SoundEngine {
       this.masterGain = this.ctx.createGain();
       this.masterGain.gain.value = 0.65;
       this.masterGain.connect(this.ctx.destination);
+
+      // Precompute static noise buffer once (Page 15)
+      this.getNoiseBuffer();
     } catch (e) {
       console.warn('[Audio] Web Audio API not supported or blocked:', e);
     }
+  }
+
+  private getNoiseBuffer(): AudioBuffer | null {
+    if (this.noiseBuffer) return this.noiseBuffer;
+    if (!this.ctx) return null;
+    const bufferSize = Math.floor(this.ctx.sampleRate * 0.15);
+    const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) {
+      data[i] = Math.random() * 2 - 1;
+    }
+    this.noiseBuffer = buffer;
+    return this.noiseBuffer;
   }
 
   private ensureContext(): boolean {
@@ -51,8 +70,30 @@ class SoundEngine {
     }
   }
 
+  public playFootstep(): void {
+    if (this.isMuted || !this.ensureContext() || !this.ctx || !this.masterGain) return;
+    try {
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(75, this.ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(35, this.ctx.currentTime + 0.05);
+
+      gain.gain.setValueAtTime(0.08, this.ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.05);
+
+      osc.connect(gain);
+      gain.connect(this.masterGain);
+
+      osc.start();
+      osc.stop(this.ctx.currentTime + 0.06);
+    } catch {
+      // Audio playback failsafe
+    }
+  }
+
   /**
-   * Plays a synthesized weapon gunshot
+   * Plays a synthesized weapon gunshot with precomputed noise buffer
    */
   public playGunshot(weaponClass: string): void {
     if (!this.ensureContext() || this.isMuted || !this.ctx || !this.masterGain) return;
@@ -62,13 +103,9 @@ class SoundEngine {
     const gain = this.ctx.createGain();
     const filter = this.ctx.createBiquadFilter();
 
-    // Noise buffer for blast punch
-    const bufferSize = this.ctx.sampleRate * 0.15;
-    const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
-    const data = buffer.getChannelData(0);
-    for (let i = 0; i < bufferSize; i++) {
-      data[i] = Math.random() * 2 - 1;
-    }
+    const buffer = this.getNoiseBuffer();
+    if (!buffer) return;
+
     const noise = this.ctx.createBufferSource();
     noise.buffer = buffer;
 
@@ -186,13 +223,13 @@ class SoundEngine {
       this.sirenOsc.start();
 
       // Modulate frequency between 600 Hz and 950 Hz
-      const lfo = this.ctx.createOscillator();
-      lfo.frequency.value = 1.8; // 1.8 Hz cycle
-      const lfoGain = this.ctx.createGain();
-      lfoGain.gain.value = 250;
-      lfo.connect(lfoGain);
-      lfoGain.connect(this.sirenOsc.frequency);
-      lfo.start();
+      this.sirenLfo = this.ctx.createOscillator();
+      this.sirenLfo.frequency.value = 1.8; // 1.8 Hz cycle
+      this.sirenLfoGain = this.ctx.createGain();
+      this.sirenLfoGain.gain.value = 250;
+      this.sirenLfo.connect(this.sirenLfoGain);
+      this.sirenLfoGain.connect(this.sirenOsc.frequency);
+      this.sirenLfo.start();
 
       this.isSirenActive = true;
     } else {
@@ -200,11 +237,33 @@ class SoundEngine {
         this.sirenOsc?.stop();
         this.sirenOsc?.disconnect();
         this.sirenGain?.disconnect();
+        this.sirenLfo?.stop();
+        this.sirenLfo?.disconnect();
+        this.sirenLfoGain?.disconnect();
       } catch (e) {}
       this.isSirenActive = false;
       this.sirenOsc = null;
       this.sirenGain = null;
+      this.sirenLfo = null;
+      this.sirenLfoGain = null;
     }
+  }
+
+  public dispose(): void {
+    this.stopVehicleEngine();
+    this.setPoliceSiren(false);
+    try {
+      this.sirenLfo?.stop();
+      this.sirenLfo?.disconnect();
+      this.sirenLfoGain?.disconnect();
+      this.sirenLfo = null;
+      this.sirenLfoGain = null;
+      this.masterGain?.disconnect();
+      void this.ctx?.close();
+    } catch {}
+    this.ctx = null;
+    this.masterGain = null;
+    this.noiseBuffer = null;
   }
 
   /**
