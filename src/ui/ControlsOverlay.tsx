@@ -5,11 +5,39 @@ import { soundEngine } from '../core/audio';
 
 export const ControlsOverlay: React.FC<{
   onTriggerInteract: () => void;
-  onTriggerFire: () => void;
+  onTriggerFire?: () => void;
+  onFireStart?: () => void;
+  onFireEnd?: () => void;
   onTriggerJump: () => void;
-}> = ({ onTriggerInteract, onTriggerFire, onTriggerJump }) => {
+}> = ({ onTriggerInteract, onTriggerFire, onFireStart, onFireEnd, onTriggerJump }) => {
   const [isExpanded, setIsExpanded] = useState(false);
-  const { inVehicle, setMapOpen, setPhoneOpen, setWeaponWheelOpen } = useGameStore();
+  const { inVehicle, setMapOpen, setPhoneOpen } = useGameStore();
+
+  const handleFireStart = (e: React.PointerEvent<HTMLButtonElement>) => {
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // Ignore if pointer capture fails
+    }
+    if (onFireStart) {
+      onFireStart();
+    } else if (onTriggerFire) {
+      onTriggerFire();
+    }
+  };
+
+  const handleFireEnd = (e: React.PointerEvent<HTMLButtonElement>) => {
+    try {
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+    } catch {
+      // Ignore
+    }
+    if (onFireEnd) {
+      onFireEnd();
+    }
+  };
 
   return (
     <>
@@ -100,9 +128,9 @@ export const ControlsOverlay: React.FC<{
         </button>
 
         <button
-          onClick={() => {
-            onTriggerFire();
-          }}
+          onPointerDown={handleFireStart}
+          onPointerUp={handleFireEnd}
+          onPointerCancel={handleFireEnd}
           style={{
             width: 52,
             height: 52,
@@ -119,6 +147,30 @@ export const ControlsOverlay: React.FC<{
           title="Fire Weapon [Left Click]"
         >
           <Crosshair size={22} />
+        </button>
+
+        <button
+          onClick={() => {
+            onTriggerJump();
+          }}
+          style={{
+            width: 52,
+            height: 52,
+            borderRadius: '50%',
+            background: 'rgba(16, 185, 129, 0.85)',
+            border: '2px solid #10b981',
+            color: '#fff',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            cursor: 'pointer',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.6)',
+            fontWeight: 800,
+            fontSize: 12
+          }}
+          title="Jump [Space]"
+        >
+          JUMP
         </button>
 
         <button
