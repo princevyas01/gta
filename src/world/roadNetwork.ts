@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { distance2D } from '../core/math';
 import { CANONICAL_DISTRICTS } from '../data/districts';
+import { laneGraph } from '../navigation/laneGraph';
 
 export interface RoadNode {
   id: string;
@@ -113,15 +114,24 @@ export class RoadNetwork {
   }
 
   /**
-   * Computes shortest path across the road network via Dijkstra / A*
+   * Computes shortest path across the road network via LaneGraph / A*
+   * Returns null if no valid path exists (never straight-line through buildings)
    */
-  public findPath(startX: number, startZ: number, endX: number, endZ: number): [number, number, number][] {
+  public findPath(startX: number, startZ: number, endX: number, endZ: number): [number, number, number][] | null {
+    // 1. Try granular lane graph first
+    const laneRoute = laneGraph.findLaneRoute([startX, 0.15, startZ], [endX, 0.15, endZ]);
+    if (laneRoute && laneRoute.length >= 2) {
+      return laneRoute;
+    }
+
+    // 2. Fallback to arterial district graph
     const startNode = this.getNearestNode(startX, startZ);
     const endNode = this.getNearestNode(endX, endZ);
 
     if (startNode.id === endNode.id) {
       return [
         [startX, 0.15, startZ],
+        [startNode.x, 0.15, startNode.z],
         [endX, 0.15, endZ]
       ];
     }
@@ -179,10 +189,8 @@ export class RoadNetwork {
     }
 
     if ((gScore.get(endNode.id) ?? Infinity) === Infinity) {
-      return [
-        [startX, 0.15, startZ],
-        [endX, 0.15, endZ]
-      ];
+      // Return null per Page 24 (never straight-line fallback across obstacles)
+      return null;
     }
 
     const path: [number, number, number][] = [];
@@ -195,10 +203,7 @@ export class RoadNetwork {
     }
 
     if (path.length === 0) {
-      return [
-        [startX, 0.15, startZ],
-        [endX, 0.15, endZ]
-      ];
+      return null;
     }
 
     path.unshift([startX, 0.15, startZ]);
