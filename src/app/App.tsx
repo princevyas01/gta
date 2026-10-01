@@ -7,6 +7,7 @@ import { PhoneMenu } from '../ui/PhoneMenu';
 import { DebugProfiler } from '../ui/DebugProfiler';
 import { ControlsOverlay } from '../ui/ControlsOverlay';
 import { inputManager } from '../core/input';
+import { unlockGameAudio } from '../core/audio';
 
 export const App: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -21,111 +22,112 @@ export const App: React.FC = () => {
     // Instantiate master game engine
     const engine = new GameEngine(containerRef.current);
     engineRef.current = engine;
-    engine.start();
 
-    // High-rate state tracker for UI
-    const interval = setInterval(() => {
-      if (engine.player) {
-        const p = engine.player.currentVehicle
-          ? engine.player.currentVehicle.position
-          : engine.player.position;
-        setPlayerCoords([p.x, p.y, p.z]);
-        setPlayerHeading(
-          engine.player.currentVehicle
-            ? engine.player.currentVehicle.rotationY
-            : engine.player.facingAngle
-        );
+    let cancelled = false;
+
+    // Throttled engine snapshot subscription replacing 60ms interval (Pages 10, 85, 101)
+    const unsubscribe = engine.onSnapshot(snapshot => {
+      if (cancelled) return;
+      setPlayerCoords(snapshot.playerCoords);
+      setPlayerHeading(snapshot.playerHeading);
+    });
+
+    void engine.ready.then(() => {
+      if (!cancelled) {
+        engine.start();
       }
-    }, 60);
+    });
 
     return () => {
-      clearInterval(interval);
+      cancelled = true;
+      unsubscribe();
       engine.dispose();
       engineRef.current = null;
     };
   }, []);
 
   const handleCanvasClick = () => {
+    // Unlock audio context on user gesture
+    unlockGameAudio();
     // Acquire pointer lock on 3D viewport click
     inputManager.requestPointerLock();
   };
 
   const handleSelectWeapon = (idx: number) => {
-    if (engineRef.current) {
-      engineRef.current.player.activeWeaponIndex = idx;
+    if (engineRef.current?.player) {
+      inputManager.state.weaponSlot = idx;
     }
   };
 
   const handleSpawnVehicle = (defId: string) => {
-    if (engineRef.current) {
-      const p = engineRef.current.player.position;
-      const offsetPos = p.clone().add({ x: 5, y: 0, z: 5 } as any);
-      engineRef.current.vehicleManager.spawnVehicle(defId, offsetPos);
-    }
+    if (!engineRef.current) return;
+    const player = engineRef.current.player;
+    const spawnPos = player.position.clone();
+    spawnPos.x += Math.sin(player.facingAngle) * 6;
+    spawnPos.z += Math.cos(player.facingAngle) * 6;
+    engineRef.current.vehicleManager.spawnVehicle(defId, spawnPos, player.facingAngle, {
+      owned: true,
+      spawnKind: 'owned'
+    });
+  };
+
+  const handleSaveGame = async () => {
+    if (!engineRef.current) return false;
+    return await engineRef.current.saveGame();
   };
 
   const handleRestartCheckpoint = () => {
-    if (engineRef.current) {
-      engineRef.current.missionManager.startMission('m_getaway_blueprint');
-      engineRef.current.player.position.set(0, 0.5, 0);
-      engineRef.current.player.stats.health = 100;
-      engineRef.current.wantedSystem.setHeat(0);
-    }
-  };
-
-  const handleTriggerInteract = () => {
-    inputManager.state.interact = true;
-    setTimeout(() => {
-      inputManager.state.interact = false;
-    }, 100);
-  };
-
-  const handleTriggerFire = () => {
-    inputManager.state.fire = true;
-    setTimeout(() => {
-      inputManager.state.fire = false;
-    }, 120);
-  };
-
-  const handleTriggerJump = () => {
-    inputManager.state.jump = true;
-    setTimeout(() => {
-      inputManager.state.jump = false;
-    }, 100);
+    engineRef.current?.restartCheckpoint();
   };
 
   return (
-    <div style={{ position: 'relative', width: '100vw', height: '100vh', overflow: 'hidden' }}>
-      {/* 3D Three.js WebGL Container */}
+    <div
+      style={{
+        position: 'relative',
+        width: '100vw',
+        height: '100vh',
+        overflow: 'hidden',
+        backgroundColor: '#000',
+        userSelect: 'none'
+      }}
+    >
+      {/* 3D WebGPU / WebGL2 Viewport Canvas */}
       <div
         ref={containerRef}
         onClick={handleCanvasClick}
-        style={{ width: '100%', height: '100%', cursor: 'crosshair' }}
+        style={{
+          width: '100%',
+          height: '100%',
+          cursor: 'crosshair',
+          display: 'block'
+        }}
       />
 
-      {/* Reactive HUD Overlay */}
+      {/* Primary HUD Overlay */}
       <HUD playerPos={playerCoords} playerHeading={playerHeading} />
 
       {/* Fullscreen Interactive 26-District Map */}
       <InteractiveMap playerPos={playerCoords} />
 
-      {/* Weapon Wheel Selector */}
+      {/* Radial Tactical Weapon Wheel */}
       <WeaponWheel onSelectWeapon={handleSelectWeapon} />
 
-      {/* In-Game Smartphone */}
+      {/* Aurelio OS In-Game Smartphone */}
       <PhoneMenu
         onSpawnVehicle={handleSpawnVehicle}
+        onSaveGame={handleSaveGame}
         onRestartCheckpoint={handleRestartCheckpoint}
       />
 
-      {/* Debug Profiler Telemetry */}
+      {/* Diagnostic Profiler Overlay */}
       <DebugProfiler playerPos={playerCoords} />
 
-      {/* Controls & Touch degradation buttons */}
+      {/* Controls Cheat-Sheet & Mobile Touch Controls */}
       <ControlsOverlay
-        onTriggerInteract={handleTriggerInteract}
-        onTriggerFire={handleTriggerFire}
-        onTriggerJump={handleTriggerJump}
+        onTriggerInteract={() => inputManager.queueInteract()}
+        onTriggerJump={() => inputManager.queueJump()}
+        onFireStart={() => inputManager.queueFire()}
+        onFireEnd={() => inputManager.releaseQueuedFire()}
       />
     </div>
   );
