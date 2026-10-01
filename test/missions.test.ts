@@ -14,9 +14,12 @@ describe('Data-Driven Mission Framework', () => {
     expect(harbor?.stages.length).toBe(3);
   });
 
-  it('initializes active mission with initial stage and objective', () => {
+  it('starts without side-effects in constructor and starts on explicit request (P14)', () => {
     const mgr = new MissionManager();
-    expect(mgr.activeMission).toBeDefined();
+    expect(mgr.activeMission).toBeNull();
+
+    const started = mgr.startMission('m_getaway_blueprint', false);
+    expect(started).toBe(true);
     expect(mgr.activeMission?.id).toBe('m_getaway_blueprint');
     expect(mgr.currentStageIndex).toBe(0);
 
@@ -24,5 +27,20 @@ describe('Data-Driven Mission Framework', () => {
     expect(obj).toBeDefined();
     expect(obj?.id).toBe('gb_step_1');
     expect(obj?.completed).toBe(false);
+  });
+
+  it('supports multi-objective stage reset to checkpoint (P14, P54)', () => {
+    const mgr = new MissionManager();
+    mgr.startMission('m_getaway_blueprint', false);
+
+    const obj = mgr.getCurrentObjective();
+    if (obj) obj.completed = true;
+
+    mgr.resetToCheckpoint();
+    const resetObj = mgr.getCurrentObjective();
+    expect(resetObj?.completed).toBe(false);
+
+    mgr.dispose();
+    expect(mgr.activeMission).toBeNull();
   });
 });
