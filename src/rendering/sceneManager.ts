@@ -35,26 +35,32 @@ export class SceneManager {
   }
 
   private async initializeRenderer(width: number, height: number): Promise<void> {
-    this.renderer = new WebGPURenderer({
-      powerPreference: 'high-performance',
-      antialias: true,
-      alpha: false
-    });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
-    this.renderer.setSize(width, height);
-    this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.0;
+    try {
+      this.renderer = new WebGPURenderer({
+        powerPreference: 'high-performance',
+        antialias: true,
+        alpha: false
+      });
+      this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+      this.renderer.setSize(width, height, false);
+      this.renderer.shadowMap.enabled = true;
+      this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      this.renderer.toneMappingExposure = 1.0;
 
-    await this.renderer.init();
+      await this.renderer.init();
 
-    if (this.disposed) {
-      this.renderer.dispose();
-      return;
+      if (this.disposed) {
+        this.renderer.dispose();
+        return;
+      }
+
+      this.container.appendChild(this.renderer.domElement);
+    } catch (error) {
+      this.disposed = true;
+      console.error('[SceneManager] Renderer initialization failed', error);
+      throw new Error('Unable to initialize the 3D renderer', { cause: error });
     }
-
-    this.container.appendChild(this.renderer.domElement);
   }
 
   public setAnimationLoop(callback: ((time: number) => void) | null): void {
