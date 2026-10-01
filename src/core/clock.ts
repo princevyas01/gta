@@ -11,6 +11,7 @@ export class GameClock {
 
   public isPaused: boolean = false;
   public totalPlayTime: number = 0;
+  public droppedSimulationTime: number = 0;
 
   public update(): { delta: number; fixedSteps: number } {
     const now = performance.now();
@@ -27,7 +28,13 @@ export class GameClock {
     this.totalPlayTime += delta;
     this.timeOfDay = (this.timeOfDay + delta * this.timeSpeed) % 24;
 
-    this.accumulator = Math.min(this.accumulator + delta, this.fixedDelta * 5);
+    const maxAccumulator = this.fixedDelta * 5;
+    const requestedAccumulator = this.accumulator + delta;
+    if (requestedAccumulator > maxAccumulator) {
+      this.droppedSimulationTime += requestedAccumulator - maxAccumulator;
+    }
+    this.accumulator = Math.min(requestedAccumulator, maxAccumulator);
+
     const fixedSteps = Math.min(
       5,
       Math.floor(this.accumulator / this.fixedDelta)
@@ -46,6 +53,7 @@ export class GameClock {
   public reset(): void {
     this.lastTime = performance.now();
     this.accumulator = 0;
+    this.droppedSimulationTime = 0;
   }
 }
 
