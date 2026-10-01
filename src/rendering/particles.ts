@@ -123,6 +123,77 @@ export class ParticleSystem {
     }
   }
 
+  public emitBulletSpark(pos: THREE.Vector3): void {
+    for (let i = 0; i < 6; i++) {
+      this.scratchVel.set(
+        (Math.random() - 0.5) * 6,
+        Math.random() * 5 + 1,
+        (Math.random() - 0.5) * 6
+      );
+      this.emit(pos, this.scratchVel, this.flashColor, 0.15, 0.25);
+    }
+  }
+
+  public emitSurfaceImpact(
+    pos: THREE.Vector3,
+    surface: 'concrete' | 'metal' | 'glass' | 'wood' | 'asphalt' | 'water' | 'foliage' = 'concrete'
+  ): void {
+    const count = surface === 'glass' ? 14 : surface === 'metal' ? 10 : 8;
+    for (let i = 0; i < count; i++) {
+      this.scratchVel.set(
+        (Math.random() - 0.5) * 5,
+        Math.random() * 4 + 0.8,
+        (Math.random() - 0.5) * 5
+      );
+
+      let color = this.smokeColor;
+      let life = 0.25;
+      let size = 0.25;
+
+      switch (surface) {
+        case 'metal':
+          color = this.flashColor;
+          life = 0.18;
+          size = 0.22;
+          break;
+        case 'glass':
+          color = new THREE.Color(0xa5f3fc);
+          life = 0.3;
+          size = 0.2;
+          break;
+        case 'water':
+          color = new THREE.Color(0x38bdf8);
+          life = 0.45;
+          size = 0.35;
+          break;
+        case 'foliage':
+          color = new THREE.Color(0x22c55e);
+          life = 0.4;
+          size = 0.28;
+          break;
+        case 'wood':
+          color = new THREE.Color(0x78350f);
+          life = 0.35;
+          size = 0.25;
+          break;
+        case 'asphalt':
+          color = new THREE.Color(0x334155);
+          life = 0.3;
+          size = 0.3;
+          break;
+        case 'concrete':
+        default:
+          color = new THREE.Color(0x94a3b8);
+          life = 0.3;
+          size = 0.28;
+          break;
+      }
+
+      this.emit(pos, this.scratchVel, color, life, size);
+    }
+  }
+
+
   public update(dt: number): void {
     let aliveCount = 0;
     const posAttr = this.geometry.attributes.position as THREE.BufferAttribute;
