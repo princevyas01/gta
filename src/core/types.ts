@@ -86,6 +86,8 @@ export type VehicleClass =
 export interface VehicleInstanceState {
   id: string;
   definitionId: string;
+  owned: boolean;
+  spawnKind: 'owned' | 'ambient' | 'police' | 'mission';
   position: [number, number, number];
   rotationY: number;
   speed: number;
@@ -167,6 +169,7 @@ export interface MissionObjective {
   type: 'reach_location' | 'steal_vehicle' | 'eliminate_targets' | 'survive_time' | 'lose_wanted';
   targetPosition?: [number, number, number];
   targetVehicleId?: string;
+  targetVehicleInstanceId?: string;
   targetCount?: number;
   currentCount?: number;
   timeRemaining?: number;
@@ -194,10 +197,21 @@ export interface TelemetryData {
   playerCoords: [number, number, number];
   currentDistrict: string;
   wantedLevel: WantedLevel;
+  rendererBackend?: string;
+  physicsStepMs?: number;
+  navAgents?: number;
+  navQueryMs?: number;
+  streamLoads?: number;
+  streamUnloads?: number;
+  streamQueue?: number;
+  droppedSimulationTime?: number;
+  audioSources?: number;
+  particleActive?: number;
+  bundleVersion?: string;
 }
 
-export interface SaveGameSchema {
-  version: number;
+export interface SaveGameSchemaV3 {
+  version: 3;
   timestamp: number;
   player: {
     position: [number, number, number];
@@ -205,11 +219,12 @@ export interface SaveGameSchema {
     stats: PlayerStats;
     inventory: InventoryItem[];
     activeWeaponIndex: number;
+    currentVehicleInstanceId: string | null;
   };
   world: {
     discoveredDistricts: string[];
     discoveredPOIs: string[];
-    timeOfDay: number; // 0-24
+    timeOfDay: number;
     weather: 'clear' | 'overcast' | 'rain' | 'fog';
   };
   missions: {
@@ -217,5 +232,7 @@ export interface SaveGameSchema {
     currentMissionId: string | null;
     currentStageIndex: number;
   };
-  ownedVehicles: string[];
+  ownedVehicles: VehicleInstanceState[];
 }
+
+export type SaveGameSchema = SaveGameSchemaV3;
