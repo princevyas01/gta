@@ -14,6 +14,7 @@ export class VehicleManager {
   public readonly vehicles: VehicleInstance[] = [];
   public playerVehicle: VehicleInstance | null = null;
   private interactLatch = false;
+  private instanceCounter = 0;
 
   constructor(scene: THREE.Scene) {
     this.scene = scene;
@@ -21,24 +22,37 @@ export class VehicleManager {
   }
 
   private spawnVerticalSliceFleet(): void {
-    this.spawnVehicle('veh_vx9_kestrel', new THREE.Vector3(400, 0, 50), 0);
-    this.spawnVehicle('veh_aurelia_regent', new THREE.Vector3(20, 0, 30), Math.PI / 2);
-    this.spawnVehicle('veh_redwood_250', new THREE.Vector3(-40, 0, -40), Math.PI);
-    this.spawnVehicle('veh_courier_l4', new THREE.Vector3(80, 0, -60), 0);
-    this.spawnVehicle('veh_mica_hatch', new THREE.Vector3(-80, 0, 80), -Math.PI / 2);
-    this.spawnVehicle('veh_kite_600', new THREE.Vector3(15, 0, -20), 0);
-    this.spawnVehicle('veh_hx4_sparrow', new THREE.Vector3(60, 0, 120), 0);
-    this.spawnVehicle('veh_ar7_mastiff', new THREE.Vector3(-120, 0, 160), Math.PI / 4);
-    this.spawnVehicle('veh_tiderunner_24', new THREE.Vector3(820, 0, 420), 0);
-    this.spawnVehicle('veh_amps_cruiser', new THREE.Vector3(70, 0, 340), 0);
+    // Player's starter owned vehicle
+    this.spawnVehicle('veh_vx9_kestrel', new THREE.Vector3(400, 0, 50), 0, {
+      owned: true,
+      spawnKind: 'owned'
+    });
+    this.spawnVehicle('veh_aurelia_regent', new THREE.Vector3(20, 0, 30), Math.PI / 2, { spawnKind: 'ambient' });
+    this.spawnVehicle('veh_redwood_250', new THREE.Vector3(-40, 0, -40), Math.PI, { spawnKind: 'ambient' });
+    this.spawnVehicle('veh_courier_l4', new THREE.Vector3(80, 0, -60), 0, { spawnKind: 'ambient' });
+    this.spawnVehicle('veh_mica_hatch', new THREE.Vector3(-80, 0, 80), -Math.PI / 2, { spawnKind: 'ambient' });
+    this.spawnVehicle('veh_kite_600', new THREE.Vector3(15, 0, -20), 0, { spawnKind: 'ambient' });
+    this.spawnVehicle('veh_hx4_sparrow', new THREE.Vector3(60, 0, 120), 0, { spawnKind: 'ambient' });
+    this.spawnVehicle('veh_ar7_mastiff', new THREE.Vector3(-120, 0, 160), Math.PI / 4, { spawnKind: 'ambient' });
+    this.spawnVehicle('veh_tiderunner_24', new THREE.Vector3(820, 0, 420), 0, { spawnKind: 'ambient' });
+    this.spawnVehicle('veh_amps_cruiser', new THREE.Vector3(70, 0, 340), 0, { spawnKind: 'ambient' });
   }
 
-  public spawnVehicle(defId: string, pos: THREE.Vector3, rotY = 0): VehicleInstance {
+  public spawnVehicle(
+    defId: string,
+    pos: THREE.Vector3,
+    rotY = 0,
+    options?: { owned?: boolean; spawnKind?: 'owned' | 'ambient' | 'police' | 'mission'; id?: string }
+  ): VehicleInstance {
     const def = getVehicleDef(defId);
     const model = VehicleFactory.createVehicleModel(def);
     this.scene.add(model.group);
 
-    const instance = new VehicleInstance(def, model, pos, rotY);
+    const instanceId = options?.id ?? `vehinst_${String(++this.instanceCounter).padStart(6, '0')}`;
+    const instance = new VehicleInstance(def, model, pos, rotY, instanceId, {
+      owned: options?.owned ?? false,
+      spawnKind: options?.spawnKind ?? 'ambient'
+    });
     this.vehicles.push(instance);
     return instance;
   }
@@ -50,9 +64,24 @@ export class VehicleManager {
       nearPos.y,
       nearPos.z + Math.sin(angle) * 65
     );
-    const unit = this.spawnVehicle('veh_amps_cruiser', spawnPos, angle);
+    const unit = this.spawnVehicle('veh_amps_cruiser', spawnPos, angle, {
+      owned: false,
+      spawnKind: 'police'
+    });
     unit.speed = 18;
     return unit;
+  }
+
+  public despawnPursuitUnits(): void {
+    for (let i = this.vehicles.length - 1; i >= 0; i--) {
+      const v = this.vehicles[i];
+      if (v.spawnKind === 'police') {
+        if (v === this.playerVehicle) this.playerVehicle = null;
+        this.scene.remove(v.mesh);
+        v.dispose();
+        this.vehicles.splice(i, 1);
+      }
+    }
   }
 
   public update(
@@ -126,8 +155,10 @@ export class VehicleManager {
     nearest.isPlayerControlled = true;
     soundEngine.startVehicleEngine();
     eventBus.emit('VEHICLE_ENTER', {
-      id: nearest.def.id,
+      id: nearest.id,
       definitionId: nearest.def.id,
+      owned: nearest.owned,
+      spawnKind: nearest.spawnKind,
       position: [nearest.position.x, nearest.position.y, nearest.position.z],
       rotationY: nearest.rotationY,
       speed: nearest.speed,
@@ -137,9 +168,25 @@ export class VehicleManager {
     return true;
   }
 
+  public getOwnedVehicles() {
+    return this.vehicles
+      .filter(v => v.owned && !v.isDestroyed)
+      .map(v => ({
+        id: v.id,
+        definitionId: v.def.id,
+        owned: true,
+        spawnKind: v.spawnKind,
+        position: [v.position.x, v.position.y, v.position.z] as [number, number, number],
+        rotationY: v.rotationY,
+        speed: v.speed,
+        health: v.health,
+        isDestroyed: v.isDestroyed
+      }));
+  }
+
   public getOwnedVehicleIds(): string[] {
     return this.vehicles
-      .filter(v => !v.isDestroyed)
+      .filter(v => v.owned && !v.isDestroyed)
       .map(v => v.def.id);
   }
 
