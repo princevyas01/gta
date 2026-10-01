@@ -59,15 +59,22 @@ export function clamp(val: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, val));
 }
 
+export function clampFactor(t: number): number {
+  if (!Number.isFinite(t)) return 0;
+  return Math.min(1, Math.max(0, t));
+}
+
 export function lerp(a: number, b: number, t: number): number {
-  return a + (b - a) * t;
+  const alpha = clampFactor(t);
+  return a + (b - a) * alpha;
 }
 
 export function lerpAngle(a: number, b: number, t: number): number {
+  const alpha = clampFactor(t);
   let diff = (b - a) % (Math.PI * 2);
   if (diff < -Math.PI) diff += Math.PI * 2;
   if (diff > Math.PI) diff -= Math.PI * 2;
-  return a + diff * t;
+  return a + diff * alpha;
 }
 
 export function distance2D(x1: number, z1: number, x2: number, z2: number): number {
@@ -82,3 +89,13 @@ export function distance3D(a: [number, number, number], b: [number, number, numb
   const dz = b[2] - a[2];
   return Math.sqrt(dx * dx + dy * dy + dz * dz);
 }
+
+export function expDamp(current: number, target: number, lambda: number, dt: number): number {
+  return current + (target - current) * (1 - Math.exp(-lambda * dt));
+}
+
+export function expDampAngle(current: number, target: number, lambda: number, dt: number): number {
+  const delta = THREE.MathUtils.euclideanModulo(target - current + Math.PI, Math.PI * 2) - Math.PI;
+  return current + delta * (1 - Math.exp(-lambda * dt));
+}
+
