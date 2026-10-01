@@ -8,9 +8,11 @@ export class AtmosphereSystem {
   private rainGeometry: THREE.BufferGeometry | null = null;
   private rainMaterial: THREE.PointsMaterial | null = null;
   private isRaining: boolean = false;
+  private readonly backgroundColor = new THREE.Color(0x7bb6e0);
 
   constructor(scene: THREE.Scene) {
     this.scene = scene;
+    this.scene.background = this.backgroundColor;
 
     // Directional Sun / Moon light
     this.dirLight = new THREE.DirectionalLight(0xfff5ea, 1.4);
@@ -64,7 +66,7 @@ export class AtmosphereSystem {
       if (this.scene.fog && this.scene.fog instanceof THREE.FogExp2) {
         this.scene.fog.color.setHex(0xa0c4df);
       }
-      this.scene.background = new THREE.Color(0x7bb6e0);
+      this.backgroundColor.setHex(0x7bb6e0);
     } else if (sunHeight > -0.1) {
       // Golden Hour / Sunset / Dawn
       this.dirLight.color.setHex(0xff7733);
@@ -75,7 +77,7 @@ export class AtmosphereSystem {
       if (this.scene.fog && this.scene.fog instanceof THREE.FogExp2) {
         this.scene.fog.color.setHex(0xd97706);
       }
-      this.scene.background = new THREE.Color(0xb45309);
+      this.backgroundColor.setHex(0xb45309);
     } else {
       // Night
       this.dirLight.color.setHex(0x60a5fa);
@@ -86,7 +88,7 @@ export class AtmosphereSystem {
       if (this.scene.fog && this.scene.fog instanceof THREE.FogExp2) {
         this.scene.fog.color.setHex(0x0a0f1d);
       }
-      this.scene.background = new THREE.Color(0x090d16);
+      this.backgroundColor.setHex(0x090d16);
     }
 
     // Weather handling
