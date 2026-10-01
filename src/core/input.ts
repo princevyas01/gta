@@ -7,7 +7,7 @@ export interface InputState {
   jump: boolean;
   jumpPressed: boolean;
   crouch: boolean;
-  interact: boolean; // E or F
+  interact: boolean;
   interactPressed: boolean;
   reload: boolean;
   reloadPressed: boolean;
@@ -18,14 +18,14 @@ export interface InputState {
   togglePhone: boolean;
   toggleDebug: boolean;
   cycleCamera: boolean;
-  weaponSlot: number | null; // 0 to 5
+  weaponSlot: number | null;
   mouseX: number;
   mouseY: number;
   isPointerLocked: boolean;
 }
 
 export class InputManager {
-  public state: InputState = {
+  public readonly state: InputState = {
     forward: false,
     backward: false,
     left: false,
@@ -52,82 +52,119 @@ export class InputManager {
   };
 
   private targetElement: HTMLElement | null = null;
+  private attached = false;
 
-  constructor() {
-    this.handleKeyDown = this.handleKeyDown.bind(this);
-    this.handleKeyUp = this.handleKeyUp.bind(this);
-    this.handleMouseDown = this.handleMouseDown.bind(this);
-    this.handleMouseUp = this.handleMouseUp.bind(this);
-    this.handleMouseMove = this.handleMouseMove.bind(this);
-    this.handlePointerLockChange = this.handlePointerLockChange.bind(this);
-  }
+  private readonly onKeyDown = (e: KeyboardEvent) => this.handleKeyDown(e);
+  private readonly onKeyUp = (e: KeyboardEvent) => this.handleKeyUp(e);
+  private readonly onMouseDown = (e: MouseEvent) => this.handleMouseDown(e);
+  private readonly onMouseUp = (e: MouseEvent) => this.handleMouseUp(e);
+  private readonly onMouseMove = (e: MouseEvent) => this.handleMouseMove(e);
+  private readonly onBlur = () => this.resetHeldInputs();
+  private readonly onVisibility = () => {
+    if (typeof document !== 'undefined' && document.hidden) {
+      this.resetHeldInputs();
+    }
+  };
+  private readonly onPointerLock = () => {
+    if (typeof document !== 'undefined') {
+      this.state.isPointerLocked = document.pointerLockElement === this.targetElement;
+      if (!this.state.isPointerLocked) {
+        this.state.mouseX = 0;
+        this.state.mouseY = 0;
+        this.state.fire = false;
+        this.state.aim = false;
+      }
+    }
+  };
 
   public attach(element: HTMLElement): void {
+    this.detach();
     this.targetElement = element;
-    window.addEventListener('keydown', this.handleKeyDown);
-    window.addEventListener('keyup', this.handleKeyUp);
-    window.addEventListener('mousedown', this.handleMouseDown);
-    window.addEventListener('mouseup', this.handleMouseUp);
-    window.addEventListener('mousemove', this.handleMouseMove);
-    document.addEventListener('pointerlockchange', this.handlePointerLockChange);
+    if (typeof window !== 'undefined') {
+      window.addEventListener('keydown', this.onKeyDown, { passive: false });
+      window.addEventListener('keyup', this.onKeyUp);
+      window.addEventListener('mousedown', this.onMouseDown);
+      window.addEventListener('mouseup', this.onMouseUp);
+      window.addEventListener('mousemove', this.onMouseMove);
+      window.addEventListener('blur', this.onBlur);
+    }
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', this.onVisibility);
+      document.addEventListener('pointerlockchange', this.onPointerLock);
+    }
+    this.attached = true;
   }
 
   public detach(): void {
-    window.removeEventListener('keydown', this.handleKeyDown);
-    window.removeEventListener('keyup', this.handleKeyUp);
-    window.removeEventListener('mousedown', this.handleMouseDown);
-    window.removeEventListener('mouseup', this.handleMouseUp);
-    window.removeEventListener('mousemove', this.handleMouseMove);
-    document.removeEventListener('pointerlockchange', this.handlePointerLockChange);
+    if (!this.attached) return;
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('keydown', this.onKeyDown);
+      window.removeEventListener('keyup', this.onKeyUp);
+      window.removeEventListener('mousedown', this.onMouseDown);
+      window.removeEventListener('mouseup', this.onMouseUp);
+      window.removeEventListener('mousemove', this.onMouseMove);
+      window.removeEventListener('blur', this.onBlur);
+    }
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', this.onVisibility);
+      document.removeEventListener('pointerlockchange', this.onPointerLock);
+    }
+    this.resetHeldInputs();
+    this.flush();
     this.targetElement = null;
+    this.attached = false;
   }
 
   public requestPointerLock(): void {
-    if (this.targetElement && !this.state.isPointerLocked) {
+    if (!this.targetElement || this.state.isPointerLocked) return;
+    const target = this.targetElement;
+    try {
+      const result = (target.requestPointerLock as unknown as (options?: { unadjustedMovement?: boolean }) => Promise<void> | void)({
+        unadjustedMovement: true
+      });
+      if (result && typeof (result as Promise<void>).catch === 'function') {
+        void (result as Promise<void>).catch(() => {
+          // Graceful fallback to standard requestPointerLock
+          try {
+            target.requestPointerLock();
+          } catch {
+            // Ignored
+          }
+        });
+      }
+    } catch {
       try {
-        this.targetElement.requestPointerLock();
-      } catch (e) {
-        // Pointer lock might be blocked by browser policy without user gesture
+        target.requestPointerLock();
+      } catch {
+        // User gesture or browser support may be required
       }
     }
   }
 
   public releasePointerLock(): void {
-    if (document.pointerLockElement) {
+    if (typeof document !== 'undefined' && document.pointerLockElement === this.targetElement) {
       document.exitPointerLock();
     }
   }
 
-  private handlePointerLockChange(): void {
-    this.state.isPointerLocked = !!document.pointerLockElement;
-  }
-
-  // Explicit command callbacks for UI / mobile buttons
-  public pressInteractForFrame(): void {
-    this.state.interact = true;
+  public queueInteract(): void {
     this.state.interactPressed = true;
   }
 
-  public pressFireForFrame(): void {
-    this.state.fire = true;
-  }
-
-  public pressJumpForFrame(): void {
-    this.state.jump = true;
+  public queueJump(): void {
     this.state.jumpPressed = true;
   }
 
-  private handleKeyDown(e: KeyboardEvent): void {
-    // If typing in an input element, do not capture game hotkeys
-    if ((e.target as HTMLElement)?.tagName === 'INPUT' || (e.target as HTMLElement)?.tagName === 'TEXTAREA') {
-      return;
-    }
+  public queueFire(): void {
+    this.state.fire = true;
+  }
 
-    if (e.repeat) {
-      if (['KeyM', 'KeyP', 'Escape', 'Backquote', 'F3', 'KeyV', 'Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6'].includes(e.code)) {
-        return;
-      }
-    }
+  public releaseQueuedFire(): void {
+    this.state.fire = false;
+  }
+
+  private handleKeyDown(e: KeyboardEvent): void {
+    if (this.isTypingTarget(e.target)) return;
 
     switch (e.code) {
       case 'KeyW':
@@ -151,9 +188,7 @@ export class InputManager {
         this.state.sprint = true;
         break;
       case 'Space':
-        if (!this.state.jump) {
-          this.state.jumpPressed = true;
-        }
+        if (!this.state.jump) this.state.jumpPressed = true;
         this.state.jump = true;
         e.preventDefault();
         break;
@@ -162,15 +197,11 @@ export class InputManager {
         break;
       case 'KeyE':
       case 'KeyF':
-        if (!this.state.interact) {
-          this.state.interactPressed = true;
-        }
+        if (!this.state.interact) this.state.interactPressed = true;
         this.state.interact = true;
         break;
       case 'KeyR':
-        if (!this.state.reload) {
-          this.state.reloadPressed = true;
-        }
+        if (!this.state.reload) this.state.reloadPressed = true;
         this.state.reload = true;
         break;
       case 'Tab':
@@ -178,19 +209,16 @@ export class InputManager {
         e.preventDefault();
         break;
       case 'KeyM':
-        this.state.toggleMap = true;
+        if (!e.repeat) this.state.toggleMap = true;
         break;
       case 'KeyP':
-      case 'Escape':
-        this.state.togglePhone = true;
+        if (!e.repeat) this.state.togglePhone = true;
         break;
-      case 'Backquote':
       case 'F3':
-        this.state.toggleDebug = true;
-        e.preventDefault();
+        if (!e.repeat) this.state.toggleDebug = true;
         break;
       case 'KeyV':
-        this.state.cycleCamera = true;
+        if (!e.repeat) this.state.cycleCamera = true;
         break;
       case 'Digit1':
         this.state.weaponSlot = 0;
@@ -237,7 +265,6 @@ export class InputManager {
         break;
       case 'Space':
         this.state.jump = false;
-        this.state.jumpPressed = false;
         break;
       case 'KeyC':
         this.state.crouch = false;
@@ -245,11 +272,9 @@ export class InputManager {
       case 'KeyE':
       case 'KeyF':
         this.state.interact = false;
-        this.state.interactPressed = false;
         break;
       case 'KeyR':
         this.state.reload = false;
-        this.state.reloadPressed = false;
         break;
       case 'Tab':
         this.state.weaponWheel = false;
@@ -258,31 +283,47 @@ export class InputManager {
   }
 
   private handleMouseDown(e: MouseEvent): void {
-    if (e.button === 0) {
+    if (e.button === 0 && this.state.isPointerLocked) {
       this.state.fire = true;
-    } else if (e.button === 2) {
+    }
+    if (e.button === 2 && this.state.isPointerLocked) {
       this.state.aim = true;
+      e.preventDefault();
     }
   }
 
   private handleMouseUp(e: MouseEvent): void {
-    if (e.button === 0) {
-      this.state.fire = false;
-    } else if (e.button === 2) {
-      this.state.aim = false;
-    }
+    if (e.button === 0) this.state.fire = false;
+    if (e.button === 2) this.state.aim = false;
   }
 
   private handleMouseMove(e: MouseEvent): void {
-    if (this.state.isPointerLocked) {
-      this.state.mouseX += e.movementX;
-      this.state.mouseY += e.movementY;
-    }
+    if (!this.state.isPointerLocked) return;
+    this.state.mouseX += e.movementX;
+    this.state.mouseY += e.movementY;
   }
 
-  /**
-   * Resets single-frame impulse events (e.g. mouse deltas, edge triggers, and toggle triggers)
-   */
+  private isTypingTarget(target: EventTarget | null): boolean {
+    const el = target as HTMLElement | null;
+    if (!el) return false;
+    return el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable;
+  }
+
+  public resetHeldInputs(): void {
+    this.state.forward = false;
+    this.state.backward = false;
+    this.state.left = false;
+    this.state.right = false;
+    this.state.sprint = false;
+    this.state.jump = false;
+    this.state.crouch = false;
+    this.state.interact = false;
+    this.state.reload = false;
+    this.state.fire = false;
+    this.state.aim = false;
+    this.state.weaponWheel = false;
+  }
+
   public flush(): void {
     this.state.mouseX = 0;
     this.state.mouseY = 0;
